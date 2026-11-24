@@ -1,0 +1,5 @@
+# Derived code model for local-code-rag: the base model with a RAG-sized context window.
+# Values mirror src/config.py (CODE_BASE_MODEL, DERIVED_MODEL_NUM_CTX); a unit test fails
+# if they drift. Build, or rebuild after any edit, with `make models`.
+FROM qwen2.5-coder:7b
+PARAMETER num_ctx 16384
