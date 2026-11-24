@@ -1,0 +1,31 @@
+# --- Required by Phase 0 (project_context/rag_phase0.md, Step 1) ---
+# Persisted vector index: generated and potentially large.
+data/vector_store/
+# uv-managed virtual environment.
+.venv/
+# Python bytecode.
+__pycache__/
+
+# --- Python build and bytecode artifacts ---
+*.py[cod]
+*.so
+build/
+dist/
+*.egg-info/
+
+# --- Tool caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Local secrets and environment overrides (never commit) ---
+.env
+.env.*
+!.env.example
+
+# --- OS / editor noise ---
+.DS_Store
+.idea/

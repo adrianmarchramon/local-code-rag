@@ -1,0 +1,6 @@
+[project]
+name = "local-code-rag"
+version = "0.1.0"
+description = "A 100% local, privacy-first RAG system for codebases."
+requires-python = ">=3.11"
+dependencies = []
