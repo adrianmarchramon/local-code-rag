@@ -3,4 +3,49 @@ name = "local-code-rag"
 version = "0.1.0"
 description = "A 100% local, privacy-first RAG system for codebases."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "ollama>=0.6.3",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pre-commit>=4.7.0",
+    "pytest>=9.2.0",
+    "ruff>=0.17.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Reference docs (source of truth): ruff also formats code blocks inside Markdown,
+# and these files must never be rewritten by tooling.
+extend-exclude = ["project_context"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I isort, B bugbear, UP pyupgrade, SIM simplify,
+# N naming, RUF ruff-specific, PT pytest style, S bandit (security),
+# BLE blind `except Exception`, T20 print calls (no print in library code).
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "N", "RUF", "PT", "S", "BLE", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+# Assertions are the point of tests.
+"tests/**" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Lets tests import `from src.<package>.<module> import ...` without installing the project.
+pythonpath = ["."]
+addopts = ["-ra", "--strict-markers", "--strict-config", "-m", "not integration"]
+markers = [
+    "integration: needs a running local Ollama with the configured models; excluded by default, run with `make test-integration`",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
