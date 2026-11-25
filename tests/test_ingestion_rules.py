@@ -10,6 +10,7 @@ from src.errors import IngestionError, LocalStackError
 from src.ingestion.reasons import DiscardReason
 from src.ingestion.rules import IngestionRules, SecretNamePattern
 
+# Changing the language map is a contract change: docs/decisions.md 9.3, "How to add a language".
 EXPECTED_EXTENSIONS = {
     ".py": "python",
     ".js": "javascript",
