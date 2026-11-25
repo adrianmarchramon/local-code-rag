@@ -1,0 +1,18 @@
+# Corpus rules for ingestion, in gitignore syntax (INGEST_IGNORE_FILE in src/config.py).
+#
+# Paths are relative to the root of the CORPUS being indexed, not to this repository.
+# These rules are applied in addition to the built-in noise patterns and to the corpus's
+# own .gitignore files. A file is skipped if any source excludes it, and a `!` line here
+# cannot re-include what another source excludes.
+#
+# Written for: fraud-mlops-pipeline at 5c288080c88f0bfec435af0093a5155baaf7f343
+# (~/repos/project-to-index). Decided by the owner on 2026-11-25; see
+# docs/decisions.md, section 7. Rules are anchored with a leading `/` so that they only
+# match at the corpus root.
+
+# Q2: MLflow model package; a stale copy of src/ (8 files byte-identical, 10 divergent)
+# plus serialized models and a lockfile.
+/deploy/model/
+
+# Q1: 13 Markdown context documents that are not the project's own documentation.
+/project_context/

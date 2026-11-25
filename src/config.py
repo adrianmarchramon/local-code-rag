@@ -12,6 +12,10 @@ Values are validated fail-closed at import time, without network access or file 
   by default; meant for the ``ollama`` service in Docker Compose).
 * ``CODE_MODEL`` and ``EMBEDDING_MODEL`` cannot be Ollama cloud tags (``:cloud`` or
   ``-cloud``): cloud models process prompts on external servers.
+* ``INGEST_IGNORE_FILE`` (Phase 1) is the versioned corpus rules file, in gitignore syntax.
+  A relative value is taken relative to this repository's root, not the working
+  directory; ``~/`` expands from ``HOME``. Paths are built lexically: whether the file
+  exists is checked by the ingestion code that reads it, never here.
 
 An invalid value raises :class:`src.errors.ConfigurationError` with an actionable message.
 """
@@ -24,6 +28,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 from urllib.parse import urlsplit
 
@@ -46,6 +51,11 @@ DEFAULT_EMBEDDING_MODEL: Final = "nomic-embed-text"
 DEFAULT_REQUEST_TIMEOUT: Final = 180.0  # seconds; local models are slow on CPU
 DEFAULT_LLM_CONTEXT_WINDOW: Final = DERIVED_MODEL_NUM_CTX
 
+# --- Ingestion (Phase 1) -------------------------------------------------------------------
+# Lexical only (no resolve/exists/stat): importing this module must not touch the disk.
+_PROJECT_ROOT: Final = Path(__file__).absolute().parents[1]
+DEFAULT_INGEST_IGNORE_FILE: Final = _PROJECT_ROOT / "config" / "ingest.ignore"
+
 _HOST_LABEL: Final = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _HOSTNAME_RE: Final = re.compile(rf"{_HOST_LABEL}(?:\.{_HOST_LABEL})*")
 _USERINFO_RE: Final = re.compile(r"//[^/@]*@")
@@ -61,6 +71,7 @@ class Settings:
     request_timeout: float
     llm_context_window: int
     local_allowed_hosts: frozenset[str]
+    ingest_ignore_file: Path = DEFAULT_INGEST_IGNORE_FILE
 
 
 def load_settings(env: Mapping[str, str]) -> Settings:
@@ -77,6 +88,7 @@ def load_settings(env: Mapping[str, str]) -> Settings:
             env, "LLM_CONTEXT_WINDOW", DEFAULT_LLM_CONTEXT_WINDOW
         ),
         local_allowed_hosts=allowed_hosts,
+        ingest_ignore_file=_parse_ingest_ignore_file(env),
     )
 
 
@@ -187,6 +199,30 @@ def _parse_positive_int(env: Mapping[str, str], name: str, default: int) -> int:
     return value
 
 
+def _parse_ingest_ignore_file(env: Mapping[str, str]) -> Path:
+    name = "INGEST_IGNORE_FILE"
+    if env.get(name) is None:
+        return DEFAULT_INGEST_IGNORE_FILE
+    value = _read(env, name, str(DEFAULT_INGEST_IGNORE_FILE))
+    if "\0" in value:
+        raise ConfigurationError(f"{name} contains a NUL character; give a valid file path.")
+    if value == "~" or value.startswith("~/"):
+        home = env.get("HOME", "").strip()
+        if not home or not Path(home).is_absolute():
+            raise ConfigurationError(
+                f"{name}={value!r} starts with '~' but HOME is not an absolute path. Use an "
+                "absolute path, or a path relative to the repository root."
+            )
+        value = home + value[1:]
+    elif value.startswith("~"):
+        raise ConfigurationError(
+            f"{name}={value!r}: '~user' paths are not supported. Use an absolute path, or a "
+            "path relative to the repository root."
+        )
+    path = Path(value)
+    return path if path.is_absolute() else _PROJECT_ROOT / path
+
+
 # Fail-closed validation at import time (the only import-time side effect in this package).
 SETTINGS: Final[Settings] = load_settings(os.environ)
 
@@ -196,3 +232,4 @@ EMBEDDING_MODEL: Final[str] = SETTINGS.embedding_model
 REQUEST_TIMEOUT: Final[float] = SETTINGS.request_timeout
 LLM_CONTEXT_WINDOW: Final[int] = SETTINGS.llm_context_window
 LOCAL_ALLOWED_HOSTS: Final[frozenset[str]] = SETTINGS.local_allowed_hosts
+INGEST_IGNORE_FILE: Final[Path] = SETTINGS.ingest_ignore_file

@@ -196,3 +196,92 @@ def test_invalid_environment_fails_closed_at_import_time() -> None:
     assert result.returncode != 0
     assert "ConfigurationError" in result.stderr
     assert "LOCAL_ALLOWED_HOSTS" in result.stderr
+
+
+# --- INGEST_IGNORE_FILE (Phase 1) -----------------------------------------------------------
+
+DEFAULT_RULES_FILE = REPO_ROOT / "config" / "ingest.ignore"
+
+
+def test_ingest_ignore_file_defaults_to_the_versioned_rules_file() -> None:
+    assert load_settings({}).ingest_ignore_file == DEFAULT_RULES_FILE
+    assert config.DEFAULT_INGEST_IGNORE_FILE == DEFAULT_RULES_FILE
+    assert DEFAULT_RULES_FILE.is_file()  # the repository ships it
+
+
+def test_ingest_ignore_file_constant_mirrors_the_loaded_settings() -> None:
+    assert isinstance(config.INGEST_IGNORE_FILE, Path)
+    assert config.SETTINGS.ingest_ignore_file == config.INGEST_IGNORE_FILE
+
+
+def test_ingest_ignore_file_absolute_override_is_kept(tmp_path: Path) -> None:
+    target = tmp_path / "rules" / "corpus.ignore"
+
+    assert load_settings({"INGEST_IGNORE_FILE": str(target)}).ingest_ignore_file == target
+
+
+def test_ingest_ignore_file_relative_value_is_relative_to_the_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)  # the working directory must not matter
+
+    settings = load_settings({"INGEST_IGNORE_FILE": "config/other.ignore"})
+
+    assert settings.ingest_ignore_file == REPO_ROOT / "config" / "other.ignore"
+
+
+def test_ingest_ignore_file_expands_home_from_the_environment(tmp_path: Path) -> None:
+    settings = load_settings({"INGEST_IGNORE_FILE": "~/x.ignore", "HOME": str(tmp_path)})
+
+    assert settings.ingest_ignore_file == tmp_path / "x.ignore"
+
+
+@pytest.mark.parametrize(
+    ("env", "match"),
+    [
+        ({"INGEST_IGNORE_FILE": ""}, "empty"),
+        ({"INGEST_IGNORE_FILE": "   "}, "empty"),
+        ({"INGEST_IGNORE_FILE": "a\0b"}, "NUL"),
+        ({"INGEST_IGNORE_FILE": "~/x.ignore"}, "HOME"),
+        ({"INGEST_IGNORE_FILE": "~/x.ignore", "HOME": "relative/home"}, "HOME"),
+        ({"INGEST_IGNORE_FILE": "~someone/x.ignore"}, "~user"),
+    ],
+)
+def test_invalid_ingest_ignore_file_is_rejected(env: dict[str, str], match: str) -> None:
+    with pytest.raises(ConfigurationError, match=match) as exc_info:
+        load_settings(env)
+
+    assert "INGEST_IGNORE_FILE" in str(exc_info.value)
+
+
+def test_load_settings_never_touches_the_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("load_settings touched the filesystem")
+
+    for name in ("stat", "lstat", "exists", "is_file", "resolve", "open", "read_text"):
+        monkeypatch.setattr(Path, name, forbidden)
+    monkeypatch.setattr(os, "stat", forbidden)
+
+    settings = load_settings({"INGEST_IGNORE_FILE": str(tmp_path / "missing.ignore")})
+
+    assert settings.ingest_ignore_file == tmp_path / "missing.ignore"
+
+
+def test_missing_ingest_ignore_file_does_not_fail_at_import_time(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist.ignore"
+    env = {**os.environ, "INGEST_IGNORE_FILE": str(missing)}
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import src.config as c; print(c.INGEST_IGNORE_FILE)"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(missing)

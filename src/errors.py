@@ -45,3 +45,16 @@ class ExternalNetworkAccessError(LocalStackError):
 
 class VerificationError(LocalStackError):
     """A local inference check ran but produced an invalid result."""
+
+
+class IngestionError(LocalStackError):
+    """Ingestion cannot proceed: invalid filtering rules or an unusable repository."""
+
+
+class IgnoreRulesError(IngestionError):
+    """An ignore source (built-in patterns, corpus rules file, or a corpus ``.gitignore``)
+    cannot be read or compiled.
+
+    Fatal on purpose (fail-closed): indexing without the project's ignore rules could
+    index exactly what the project meant to hide.
+    """
