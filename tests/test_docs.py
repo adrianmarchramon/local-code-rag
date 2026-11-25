@@ -22,6 +22,7 @@ REQUIRED_H2 = (
     "## 5. Stack decisions",
     "## 6. Known gaps and open questions",
     "## 7. Phase 1 — Ingestion filtering (Steps 1\u20133)",  # \u2013: en dash (RUF001)
+    "## 8. Phase 1 — Loading and metadata (Steps 4\u20135)",  # \u2013: en dash (RUF001)
 )
 USER_PATH = re.compile(r"/home/[^/\s]+|/Users/[^/\s]+|[A-Za-z]:\\Users\\", re.IGNORECASE)
 

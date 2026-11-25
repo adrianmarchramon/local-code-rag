@@ -150,6 +150,10 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | Corpus `git clone` (run by the owner) | 23:06:36Z (from the reflog) | github.com (HTTPS) | Clone request | 0 / Step 6 | [M] |
 | Public documentation reads (PyPI JSON for `llama-index` and `llama-index-core`, three `llama-index-core` source files, Chroma docs: 6 URLs) | 2026-11-25 13:27:45–13:28:55Z | pypi.org, raw.githubusercontent.com, docs.trychroma.com | HTTP GETs; no repository data | 1 / preparation | [S] |
 | `uv add --offline pathspec` (previewed first on scratch copies of `pyproject.toml` and `uv.lock`) | 2026-11-25 15:28:59Z | none | Nothing (no download; 1.1.1 was already in the uv cache) | 1 / Steps 1–3 | [M] |
+| `uv add --no-sync llama-index-core` on scratch copies of `pyproject.toml` and `uv.lock` (resolution only) | 2026-11-25 16:37:30–16:37:32Z | pypi.org, files.pythonhosted.org | Package names and versions, uv's User-Agent | 1 / Steps 4–5 | [M] |
+| `uv add llama-index-core` (46 new packages, all wheels, 53,381,296 B) | 2026-11-25 16:42:05–16:42:10Z | pypi.org, files.pythonhosted.org | Package names and versions, uv's User-Agent | 1 / Steps 4–5 | [M] |
+| NLTK data download attempted by `llama-index-core` on the first use of its stopwords; blocked by `NetworkGuard` before name resolution (see 8.1, venv permissions) | 2026-11-25 about 16:44Z | raw.githubusercontent.com (never reached) | Nothing | 1 / Steps 4–5, test probe | [M] |
+| `uv sync --locked --offline --reinstall` in copy mode | 2026-11-25 16:50:13Z | none | Nothing (from the uv cache) | 1 / Steps 4–5 | [M] |
 
 **3.4 Controls matrix**
 
@@ -162,6 +166,7 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | Ollama client wrapper | Explicit host and finite timeout; no redirects; ignores proxy variables and `OLLAMA_HOST` | Other HTTP clients added in later phases | `tests/test_ollama_client.py` [M] |
 | Network guard | Blocks and records non-loopback connections and name lookups in the Python process, for every test (autouse) and for `make verify-local` | The Ollama server process, subprocesses, C extensions that bypass Python's `socket` | `make test`: 0 violations; `verify-local`: `blocked_attempts=0` [M] |
 | Static URL test | Non-loopback URLs in string literals under `src/` | URLs built at runtime; documentation | `tests/test_no_external_urls.py` [M] |
+| `.venv` without hardlinks or group write (`link-mode = "copy"`, `umask 022` in `make install`) | `llama-index-core` uses the NLTK and tiktoken data bundled in its wheel, so their first use needs no download | A `.venv` created another way (plain `uv sync` with a group-writable umask, other tools) | `tests/test_ingestion_privacy.py`: load, tokenizer, stopwords and punkt in a fresh interpreter, 0 violations, 0 files written [M] |
 | `models_present` check | Rejects models with no local weights (remote/cloud) | — | `tests/test_health_check.py` [M] |
 | Socket sampling | Ollama's TCP/UDP sockets to non-loopback peers | Connections shorter than the 1 s interval; lookups through the local resolver (127.0.0.53) | 579 samples, 0 non-loopback [H] |
 | Offline test | Generation and embedding with the network down | — | 22:25Z, exit 0; `nmcli networking connectivity` → `none`; `ip route show default` → empty [U] |
@@ -330,6 +335,123 @@ How it was produced:
 - **Per path:** `IgnorePolicy` (built-ins, `config/ingest.ignore`, the corpus's `.gitignore` files) → `classify_name` → `probe_head` (first KiB only). The first reason was recorded. The included files were also hashed, for the duplicate check only.
 - **Next:** Step 4's loader and CLI will replace the script.
 
+## 8. Phase 1 — Loading and metadata (Steps 4–5)
+
+Steps 4–5 turn the filters of section 7 into the loader that later phases call: traversal, reading, deduplication, LlamaIndex `Document` objects with their metadata, a load report and a CLI [D: rag_phase1.md Steps 4–5]. Code: `src/ingestion/{walker,content,documents,dedup,report,loader}.py`; only `documents.py` and `loader.py` import LlamaIndex, and only `loader.py` imports `src.config`.
+
+**8.1 Decisions**
+
+| ID | Decision | Source |
+|---|---|---|
+| Q2 | Deduplicate by sha256 of the bytes on disk, last and only among files that passed every other filter; keep the lexicographically smallest POSIX path, discard the rest as `duplicate` with their canonical path | [U] 2026-11-25 |
+| Q5 | `llama-index-core` 0.14.26 only (no metapackage, no integrations): 46 new packages, all wheels, 53,381,296 B; no version already locked changed | [U] 2026-11-25; [M] |
+| Q6 | Six metadata keys; `doc_id` derived from `file_path`; only `file_path` and `language` visible to the embedding model and the LLM (table 8.5) | [U] 2026-11-25 |
+| D5 | Strict UTF-8; one leading BOM stripped; `\r\n` and lone `\r` become `\n` in `Document.text`; `num_lines` = number of `\n` plus 1 if the text does not end with one; `size_bytes` and `content_hash` over the bytes on disk | [U] 2026-11-25; [M] the 88 corpus files have no CR, BOM or NUL |
+| D6 | `doc_id` (`id_`) = `file_path`: deterministic, unique within a repository, independent of content and of the root's location | [U] 2026-11-25 |
+| D7 | `max_file_bytes` = 1 MiB (1,048,576 B); larger files are `too_large`. The largest corpus file has 30,753 B, so the cap drops nothing here | [U] 2026-11-25; [M] |
+| D8 | `load_repository` raises `NoDocumentsError` when nothing passes the filters; `load_repository_with_report` returns the empty result; the CLI exits 21 | [U] 2026-11-25 |
+| `REPO_PATH` | New `Final[Path]` in `src/config.py`, default `~/repos/project-to-index`. It must be absolute or start with `~/` (relative values are rejected); `~` expands from `HOME`; no disk access at import; without `REPO_PATH` and without a usable `HOME`, import fails with `ConfigurationError` | [D: rag_phase1.md Step 4], prompt contract |
+| Venv permissions | With the owner's `umask 0002` and uv's default hardlinks, nltk 3.10.4 refused the NLTK data bundled in `llama-index-core` (group-writable, then multiply-linked files), and `llama-index-core` tried to download it instead (blocked by the guard). Fixed with `chmod -R go-w .venv`, `[tool.uv] link-mode = "copy"`, `umask 022` in `make install`, and an offline reinstall. Never set `NLTK_DATA` or `TIKTOKEN_CACHE_DIR`: either one makes `llama-index-core` skip its bundled data | [U] 2026-11-25; [M] |
+| Walker order | Symlinks and special files are rejected by the walker from the directory entry, right after the path filters and before name classification: every symlink is reported as `symlink`, whatever its name | Implementation decision; prompt test requirement |
+
+**Deviations from rag_phase1.md**
+
+| Doc | This project | Why |
+|---|---|---|
+| `rglob` + `IGNORED_DIRS` by name | Iterative `os.scandir`, ignored directories pruned before descending | Speed, Q8, D2; no recursion limit |
+| `path.is_file()` follows symlinks | Symlinks never followed, counted as `symlink` | Nothing outside the root can be read |
+| `read_text` (universal newlines, errors skipped without a count) | Bounded read, strict UTF-8, explicit normalization (D5), every failure counted with a reason | Determinism and traceability |
+| No size cap, no empty-file rule, no deduplication, filesystem order | `too_large`, `empty`, `duplicate`, output sorted by POSIX path | D7, Q2; the same tree gives the same output |
+| `num_lines = count("\n") + 1` | Editor-style count (D5) | The doc's formula adds one line to every file that ends with a newline (88 of 88 here) |
+| Random `Document` ID | `id_` = `file_path` | D6; Phase 2 indexes text by `doc_id` |
+| All metadata visible to the models | Four keys hidden | Q6 |
+| `__main__` with `print` | CLI with exit codes and JSON logs | Repository rules `T20`/`BLE`; same pattern as `src/health_check.py` |
+| `uv add llama-index pathspec` | `llama-index-core` and `pathspec` | Q5: no OpenAI integrations |
+
+**8.2 Discard reasons.** This table supersedes the "Planned" row for duplicates in 7.1.
+
+| Code | Mechanism | Test |
+|---|---|---|
+| `invalid_name` | Name not valid UTF-8, or containing a backslash or a control character | `tests/test_ingestion_walker.py` |
+| `builtin_pattern`, `corpus_rules`, `gitignore` | Ignore policy (section 7); directories pruned | `tests/test_ingestion_ignore.py`, `tests/test_ingestion_walker.py` |
+| `symlink` | Directory entry, or `lstat` of a file swapped after the walk | `tests/test_ingestion_walker.py`, `tests/test_ingestion_content.py` |
+| `not_regular_file` | FIFO, socket or device; never opened | `tests/test_ingestion_walker.py`, `tests/test_ingestion_binary.py` |
+| `lockfile`, `secret_name`, `unmapped_type` | File name (section 7) | `tests/test_ingestion_classify.py` |
+| `too_large` | `lstat` size above the cap, or more than the cap read | `tests/test_ingestion_content.py` |
+| `binary` | NUL in the first KiB (probe) or anywhere in the decoded text | `tests/test_ingestion_binary.py`, `tests/test_ingestion_content.py` |
+| `unreadable` | Open, read or directory listing failed | `tests/test_ingestion_content.py`, `tests/test_ingestion_walker.py` |
+| `undecodable` | Not valid UTF-8 | `tests/test_ingestion_content.py` |
+| `empty` | No bytes, or only whitespace after decoding | `tests/test_ingestion_content.py` |
+| `duplicate` | Same sha256 as a kept file with a smaller path | `tests/test_ingestion_dedup.py` |
+
+All of them are exercised together in `tests/test_ingestion_loader_integration.py`.
+
+**8.3 Evaluation order** (the first rejection gives the reason):
+1. Directory entry: `invalid_name` → the three ignore sources (directories are pruned) → `symlink` → `not_regular_file`.
+2. File name: `lockfile` → `secret_name` → `unmapped_type`.
+3. `lstat`: `symlink` / `not_regular_file` / `too_large`.
+4. First-KiB probe: `binary` / `unreadable` / `not_regular_file`.
+5. Bounded read: `too_large` / `unreadable` / `undecodable` / `binary` (NUL) / `empty`.
+6. `duplicate`, among the survivors only.
+
+**8.4 API and CLI.**
+- **Functions:** `load_repository(repo_path, *, rules=None, rules_file=None) -> list[Document]` and `load_repository_with_report(...) -> LoadResult(documents, report, discarded, pruned)`. Both are deterministic and write nothing.
+- **Report:** included files and bytes, by language and by top-level directory; discarded files and pruned directories by reason; duplicate pairs; `.gitignore` files read. No timings and no absolute paths.
+- **CLI:** `python -m src.ingestion.loader [--repo P] [--rules-file F] [--list | --json]`, or `make ingest INGEST_FLAGS=...`.
+- **Exit codes:** 0 OK, 1 unexpected, 2 arguments, 10 configuration, 14 network, 20 ingestion error, 21 no documents.
+
+**8.5 Metadata contract**
+
+| Key | Type | Definition | Seen by the models |
+|---|---|---|---|
+| `file_path` | str | POSIX path relative to the root (also the `doc_id`) | Yes |
+| `language` | str | One of the 16 labels of section 7 | Yes |
+| `size_bytes` | int | Bytes on disk | No |
+| `num_lines` | int | Editor-style line count of `text` (D5) | No |
+| `content_hash` | str | sha256 hex of the bytes on disk | No |
+| `directory` | str | POSIX parent of `file_path`, `""` at the root | No |
+
+What the embedding model and the LLM see is `file_path: <path>\nlanguage: <label>\n\n<text>`. For the longest corpus path (65 characters) the visible metadata takes 95 characters, which Phase 2's splitter subtracts, in tokens, from every chunk. Each document has its own excluded-key lists. Vector stores add `doc_id`, `document_id`, `ref_doc_id`, `_node_content` and `_node_type`, none of which collides with these keys. LlamaIndex's `Document.hash` is a different value from `content_hash`.
+
+**8.6 Known limitations**
+- **UTF-16 and UTF-32:** text in these encodings is rejected (`binary` or `undecodable`).
+- **Repository-external ignore rules:** case-insensitive filesystems, `.git/info/exclude` and the global excludes file behave as in 7.4.
+- **Counts by directory:** a pruned directory counts once. The report is not file-for-file comparable with `git ls-files`.
+- **Line-ending normalization:** `len(text)` differs from `size_bytes`, and copies that differ only in CRLF/LF are not deduplicated.
+- **No line-length heuristic:** minified or generated one-line files under 1 MiB are loaded. The longest corpus line has 490 characters.
+- **Files swapped during a load:** a file replaced by a symlink after the walk is reported as `not_regular_file` if the swap happens between `lstat` and opening it.
+- **Walking cost:** the ignore policy's cost per path grows with depth². That is negligible at the corpus's depth of 6; a synthetic 1,100-level tree took about 11 s.
+- **Shared collections:** `doc_id` is unique within one repository only. Indexing several repositories into one collection would need a prefix (a Phase 3 decision).
+
+**8.7 Result on the corpus** [M], 2026-11-25 at 17:04–17:05Z. The production CLI ran under `NetworkGuard` (0 violations). The corpus was at `5c288080…`, with the same HEAD, an empty `git status` and 0 untracked files before and after the run.
+
+| Language | Files | Bytes |
+|---|---|---|
+| markdown | 46 | 263,570 |
+| python | 32 | 192,670 |
+| yaml | 7 | 24,349 |
+| toml | 1 | 3,797 |
+| dockerfile | 1 | 4,964 |
+| makefile | 1 | 2,647 |
+| **Total** | **88** | **491,997** |
+
+| Finding | Value |
+|---|---|
+| By top-level directory | `docs` 45, `src` 19, root 8, `tests` 6, `pipelines` 4, `scripts` 2, `.github` 2, `docker` 2 |
+| Discarded files | 22: `unmapped_type` 20, `lockfile` 2 |
+| Pruned directories | 3: `.git` (`builtin_pattern`), `deploy/model` and `project_context` (`corpus_rules`, which held the 51 files of 7.5) |
+| Duplicates, `.gitignore` files read | 0, 4 |
+| Against the expected result | Equal to 88 files / 491,997 B and to every per-language figure. The `--list` output is the same set of 88 paths as the Steps 1–3 preview (`git ls-files` universe), sorted. `size_bytes` sums to 491,997; `num_lines` sums to 10,194 |
+| Spot checks | `content_hash` and `size_bytes` match `sha256sum` and `stat` for `src/models/register.py` and `README.md` |
+| Time | 9.3 ms for the load (from the log); 0.86 s for the whole process, including `uv run` and importing LlamaIndex |
+
+**8.8 Notes for Phase 2** (not fixed here)
+- **Labels without a syntax-aware parser:** `markdown`, `yaml`, `toml`, `dockerfile` and `makefile` go to the fallback splitter.
+- **`end_line` may point one line too far:** `count("\n", 0, end_char_idx)` counts past the chunk's last newline.
+- **Embedding cap:** `nomic-embed-text` accepts at most 2048 tokens, visible metadata included (8.5).
+- **Stable chunk IDs:** pass a deterministic `id_func` to the node parsers; the default is `uuid4`.
+- **Bundled NLTK and tiktoken data:** `SentenceSplitter` relies on it (8.1, venv permissions).
+
 ## Appendix: Evidence and reproduction
 
 | # | Command | What it proves |
@@ -347,6 +469,7 @@ How it was produced:
 | C3 | `python3 -I characterize.py <corpus> tracked.z root_gitignored.z`, from a new `mktemp -d` folder | All Step 6 aggregates |
 | C4 | `git -C <corpus> ls-files -s -z`, grouped by blob ID | Byte-identical duplicates (8 `deploy/model` ↔ `src`) |
 | P1 | `git -C <corpus> ls-files -z`, then the Steps 1–3 preview script via `uv run --locked --offline python -I`, from a new `mktemp -d` folder | Section 7.5: 88 files / 491,997 B and the discard reasons |
+| P2 | `make ingest INGEST_FLAGS="--repo ~/repos/project-to-index"` (also with `--list` and `--json`) | Section 8.7: 88 files / 491,997 B, discard reasons and pruned directories |
 
 C3 is a stdlib-only script, not versioned in this repository, and imports no networking modules. It does not follow symlinks and handles paths as bytes. Per file it records:
 - a binary flag (NUL byte in the first KiB), lines as `count("\n") + 1`, and UTF-8 validity;
