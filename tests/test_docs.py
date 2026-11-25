@@ -3,15 +3,19 @@
 Structure: the exact H2 headings exist. Anti-drift: the document names the default
 models and context window taken from src/config.py, the single source of truth; the
 DEFAULT_* constants do not depend on environment variables. Hygiene: no absolute user
-paths. `TODO(user)` markers are allowed.
+paths. `TODO(user)` markers are allowed. Phase 1: every discard reason, every language label,
+the frozen corpus commit and the expected totals are named.
 """
 
 import re
 from pathlib import Path
 
 import pytest
+from corpus_manifest import FROZEN_CORPUS_SHA
 
 from src import config
+from src.ingestion.reasons import DiscardReason
+from src.ingestion.rules import IngestionRules
 
 DOC = Path(__file__).resolve().parents[1] / "docs" / "decisions.md"
 REQUIRED_H2 = (
@@ -23,6 +27,7 @@ REQUIRED_H2 = (
     "## 6. Known gaps and open questions",
     "## 7. Phase 1 — Ingestion filtering (Steps 1\u20133)",  # \u2013: en dash (RUF001)
     "## 8. Phase 1 — Loading and metadata (Steps 4\u20135)",  # \u2013: en dash (RUF001)
+    "## 9. Phase 1 — Languages, tests and closure (Steps 6\u20137)",  # \u2013: en dash
 )
 USER_PATH = re.compile(r"/home/[^/\s]+|/Users/[^/\s]+|[A-Za-z]:\\Users\\", re.IGNORECASE)
 
@@ -51,3 +56,22 @@ def test_document_names_the_configured_defaults(default: str) -> None:
 
 def test_document_contains_no_absolute_user_paths() -> None:
     assert [m for line in _doc_lines() for m in USER_PATH.findall(line)] == []
+
+
+@pytest.mark.parametrize("reason", [reason.value for reason in DiscardReason])
+def test_document_names_every_discard_reason(reason: str) -> None:
+    assert f"`{reason}`" in "\n".join(_doc_lines()), (
+        f"docs/decisions.md does not explain {reason!r}"
+    )
+
+
+@pytest.mark.parametrize("label", sorted(IngestionRules().languages))
+def test_document_names_every_language_label(label: str) -> None:
+    assert f"`{label}`" in "\n".join(_doc_lines()), f"docs/decisions.md does not list {label!r}"
+
+
+def test_document_names_the_frozen_corpus_and_the_expected_totals() -> None:
+    text = "\n".join(_doc_lines())
+
+    assert FROZEN_CORPUS_SHA in text
+    assert "88 files / 491,997 B" in text

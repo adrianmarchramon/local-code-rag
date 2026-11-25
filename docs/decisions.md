@@ -3,6 +3,7 @@
 | Date (UTC) | Phase | Scope |
 |---|---|---|
 | 2026-11-24 | 0: Setup and fundamentals (Steps 1–7) | Use case, model, privacy argument, corpus, stack. Phases 1+ are planned, not built. |
+| 2026-11-25 | 1: Ingestion (Steps 1–7) | Filters, loader, metadata, languages, tests and the key test (sections 7–9). Phases 2+ are planned, not built. |
 
 ## 0. How to read this document
 
@@ -16,6 +17,8 @@ Every figure or factual claim carries its provenance:
 | `[D: file §]` | Stated by a project document in `project_context/` (attributed, not verified) |
 | `[U]` | Stated by the project owner |
 | `[E]` | Estimate computed from the figures above; the calculation is shown and assumptions are labelled |
+
+In sections 7–9 (Phase 1), `[M]` means measured on this host on 2026-11-25 (UTC).
 
 `TODO(user)` marks a sentence that needs the owner's own judgment, or a fact nobody recorded. Each one carries the question to answer.
 
@@ -127,6 +130,7 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | | Statement |
 |---|---|
 | Covered | The assistant's runtime (indexing and querying): no repository data, prompt or embedding leaves the host. Verified so far for the Phase 0 runtime (Ollama plus `make verify-local`). |
+| Covered | Phase 1 ingestion: the loader CLI, the key test and every test run under the network guard, with 0 violations [M] (sections 8–9) |
 | Not covered | The one-off provisioning downloads listed in 3.3 |
 | Not covered | The tools used to develop this repository; this document makes no claim about their network behaviour |
 | Not covered | The security of the host itself (operating system, other processes, physical access) |
@@ -154,6 +158,7 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | `uv add llama-index-core` (46 new packages, all wheels, 53,381,296 B) | 2026-11-25 16:42:05–16:42:10Z | pypi.org, files.pythonhosted.org | Package names and versions, uv's User-Agent | 1 / Steps 4–5 | [M] |
 | NLTK data download attempted by `llama-index-core` on the first use of its stopwords; blocked by `NetworkGuard` before name resolution (see 8.1, venv permissions) | 2026-11-25 about 16:44Z | raw.githubusercontent.com (never reached) | Nothing | 1 / Steps 4–5, test probe | [M] |
 | `uv sync --locked --offline --reinstall` in copy mode | 2026-11-25 16:50:13Z | none | Nothing (from the uv cache) | 1 / Steps 4–5 | [M] |
+| Phase 1 Steps 6–7 and closure: no download, no installation, no documentation read | 2026-11-25 | none | Nothing | 1 / Steps 6–7 | [M] |
 
 **3.4 Controls matrix**
 
@@ -226,6 +231,8 @@ TODO(user): Which questions should the assistant answer well on this corpus to c
 
 Ruff configuration: this repository keeps its own settings (line length 100, py311, rules `E W F I B UP SIM N RUF PT S BLE T20`). The MLOps repository uses line length 88, py312, rules `E F I N UP B D S`, and ignores `D401 N803 N806`. This repository keeps the stricter set on purpose, because `BLE` and `T20` enforce the no-broad-except and no-print guardrails [M], [U].
 
+Update after Phase 1 (2026-11-25): `llama-index-core` 0.14.26 and `pathspec` 1.1.1 are installed and used by ingestion only (7.2, 8.1); the rest of this table is unchanged.
+
 ## 6. Known gaps and open questions
 
 | Gap | Status | Procedure to reproduce (not run) |
@@ -237,10 +244,11 @@ Ruff configuration: this repository keeps its own settings (line length 100, py3
 | Sign-in status | Closed: never signed in [U] | No read-only CLI check exists |
 | Offline-test connectivity evidence | Closed [U] | Appendix A5 |
 | Corpus limitations | Small (109 loadable files), monolingual, prose-heavy, 8 duplicated files, DVC data absent | Revisit in Phases 1 and 7 |
+| Corpus after Phase 1 | 88 files / 491,997 B, deduplicated, without `deploy/model/` and `project_context/` (9.6); still small, and mostly prose and Python | Revisit in Phase 7 |
 
 ## 7. Phase 1 — Ingestion filtering (Steps 1–3)
 
-Steps 1–3 decide what may enter the searchable universe: the rules as data, the ignore policy and the per-file classification [D: rag_phase1.md Steps 1–3]. Step 4 adds the directory walker, reading and decoding, the size cap, empty files, deduplication and the `Document` objects. Code: `src/ingestion/{reasons,rules,ignore,classify,binary}.py`; corpus rules: `config/ingest.ignore`.
+Steps 1–3 decide what may enter the searchable universe: the rules as data, the ignore policy and the per-file classification [D: rag_phase1.md Steps 1–3]. Section 8 (Steps 4–5) adds the directory walker, reading and decoding, the size cap, empty files, deduplication and the `Document` objects. Code: `src/ingestion/{reasons,rules,ignore,classify,binary}.py`; corpus rules: `config/ingest.ignore`.
 
 **7.1 Noise categories**
 
@@ -255,7 +263,7 @@ Steps 1–3 decide what may enter the searchable universe: the rules as data, th
 | Data, notebooks, media, serialized models | Not in the language map (`.json`, `.csv`, `.ipynb`, `.pkl`, `.joblib`, `.png`, `.pdf`, `.mp4`, …) | `unmapped_type` | `tests/test_ingestion_classify.py` | Done |
 | Disguised binaries | NUL byte in the first 1,024 bytes | `binary` | `tests/test_ingestion_binary.py` | Done |
 | Unreadable and special files | Open without following symlinks and without blocking; read failures are a verdict, not a crash | `unreadable`, `not_regular_file` | `tests/test_ingestion_binary.py` | Done |
-| Duplicates | sha256 of the content; the lexicographically smallest POSIX path is kept (Q2) | `duplicate` | — | Planned, Step 4 |
+| Duplicates | sha256 of the content; the lexicographically smallest POSIX path is kept (Q2) | `duplicate` | `tests/test_ingestion_dedup.py` | Done (section 8) |
 
 All of them are exercised together on a synthetic, corpus-shaped tree in `tests/test_ingestion_filters_integration.py`.
 
@@ -274,16 +282,7 @@ All of them are exercised together on a synthetic, corpus-shaped tree in `tests/
 | D4 | Exclude and count file names matching `.env`, `.env.*` (except `*.example`, `*.sample`, `*.template`), `*.pem`, `*.key`, `id_rsa*`, `*credentials*`, `*secret*`, on the base name, case-insensitively, before the language check. 0 matches in the corpus | [U] 2026-11-25; [M] |
 | Library | `pathspec` 1.1.1 `GitIgnoreSpec`, queried with `check_file()`, whose result tells "excluded", "re-included by `!`" and "no match" apart. Directories are queried with a trailing slash | [M] (installed source) |
 
-**Deviations from rag_phase1.md**
-
-| Doc | This project | Why |
-|---|---|---|
-| Step 2 reads the root `.gitignore` only | Root and nested files, plus built-in patterns and the corpus rules file | Q8, Q4; the corpus has three nested `.gitignore` files [M] |
-| `PathSpec.from_lines("gitwildmatch", …)` | `GitIgnoreSpec`, evaluated directory level by directory level | `gitwildmatch` is deprecated since `pathspec` 1.0.0 (it emits `DeprecationWarning`); `GitIgnoreSpec` alone re-includes `build/keep.py` under `build/` + `!build/keep.py`, which Git 2.53 does not [M] |
-| `IGNORED_DIRS` matched by name at any depth | D2 | Avoid dropping a legitimate nested `build/` or `vendor/` |
-| Extension-only map, 15 entries | 18 extensions, 2 file names, lockfiles | Q3 |
-| `is_probably_binary` reads the whole file and returns True on `OSError` | Reads at most 1,024 bytes, never follows symlinks, does not block on FIFOs; "unreadable" is its own verdict | Bounded I/O; an I/O error says nothing about binary content |
-| Every `.md` file is indexed | `project_context/` excluded | Q1 |
+Deviations from rag_phase1.md: see the single table in 9.9.
 
 **7.3 Evaluation order.** Cheapest check first; the first filter that rejects a path gives its reason:
 
@@ -295,16 +294,9 @@ All of them are exercised together on a synthetic, corpus-shaped tree in `tests/
 6. language by file name, then by lowercased last extension → `unmapped_type`
 7. first-KiB probe → `binary`, `unreadable` or `not_regular_file`
 
-Filters 1–3 also apply to directories, so Step 4 can prune them before descending. They combine by union: a `!` line works inside the rules file and inside the `.gitignore` chain, never across sources.
+Filters 1–3 also apply to directories, so Step 4 can prune them before descending. They combine by union: a `!` line works inside the rules file and inside the `.gitignore` chain, never across sources. For the loader, 8.3 supersedes this order: symlinks and special files get their own codes from the directory entry, before name classification.
 
-**7.4 Known limitations**
-- UTF-16 and UTF-32 text contains NUL bytes and is classified as binary.
-- A NUL byte after the first KiB is not detected. Step 4's strict UTF-8 decoding rejects most other binary content, but NUL is valid UTF-8.
-- Matching is case-sensitive, like Git with `core.ignorecase=false`. On case-insensitive filesystems the results may differ from Git's.
-- `.git/info/exclude`, the global `core.excludesFile` and `.gitattributes` are not read: they are not part of the repository, so reading them would make results depend on the machine.
-- `Dockerfile.dev` or a lowercase `makefile` get no language (exact names only).
-- `*secret*` and `*credentials*` also exclude legitimate files such as `secrets_manager.py`. The skip is visible in the reason counts.
-- `pathspec` 1.1.1 raises `re.error` on an invalid range such as `[z-a]` and `GitIgnorePatternError` on a lone `!` or `\`; Git ignores such lines. Both count as invalid lines (D3).
+**7.4 Known limitations:** see the single table in 9.10.
 
 **7.5 Result on the corpus (preview of Steps 1–3)** [M]. Run on 2026-11-25 at 15:41:49Z with the corpus at `5c288080…`. Before and after the run, HEAD was the same and `git status` was empty.
 
@@ -333,7 +325,7 @@ How it was produced:
   - It was run from this repository's root with `uv run --locked --offline python -I`, and imported only `src.config` and `src.ingestion`.
   - It ran under `NetworkGuard`, with 0 violations. `unshare -rn` was blocked by the host's user-namespace policy.
 - **Per path:** `IgnorePolicy` (built-ins, `config/ingest.ignore`, the corpus's `.gitignore` files) → `classify_name` → `probe_head` (first KiB only). The first reason was recorded. The included files were also hashed, for the duplicate check only.
-- **Next:** Step 4's loader and CLI will replace the script.
+- **Superseded by 8.7:** the loader and CLI give the same result. Here the 51 files under the two excluded directories are counted one by one; 8.7 counts the pruned directories instead. Both add up: 161 tracked files = 88 included + 22 discarded + 51 under `deploy/model/` and `project_context/`.
 
 ## 8. Phase 1 — Loading and metadata (Steps 4–5)
 
@@ -354,21 +346,9 @@ Steps 4–5 turn the filters of section 7 into the loader that later phases call
 | Venv permissions | With the owner's `umask 0002` and uv's default hardlinks, nltk 3.10.4 refused the NLTK data bundled in `llama-index-core` (group-writable, then multiply-linked files), and `llama-index-core` tried to download it instead (blocked by the guard). Fixed with `chmod -R go-w .venv`, `[tool.uv] link-mode = "copy"`, `umask 022` in `make install`, and an offline reinstall. Never set `NLTK_DATA` or `TIKTOKEN_CACHE_DIR`: either one makes `llama-index-core` skip its bundled data | [U] 2026-11-25; [M] |
 | Walker order | Symlinks and special files are rejected by the walker from the directory entry, right after the path filters and before name classification: every symlink is reported as `symlink`, whatever its name | Implementation decision; prompt test requirement |
 
-**Deviations from rag_phase1.md**
+Deviations from rag_phase1.md: see the single table in 9.9.
 
-| Doc | This project | Why |
-|---|---|---|
-| `rglob` + `IGNORED_DIRS` by name | Iterative `os.scandir`, ignored directories pruned before descending | Speed, Q8, D2; no recursion limit |
-| `path.is_file()` follows symlinks | Symlinks never followed, counted as `symlink` | Nothing outside the root can be read |
-| `read_text` (universal newlines, errors skipped without a count) | Bounded read, strict UTF-8, explicit normalization (D5), every failure counted with a reason | Determinism and traceability |
-| No size cap, no empty-file rule, no deduplication, filesystem order | `too_large`, `empty`, `duplicate`, output sorted by POSIX path | D7, Q2; the same tree gives the same output |
-| `num_lines = count("\n") + 1` | Editor-style count (D5) | The doc's formula adds one line to every file that ends with a newline (88 of 88 here) |
-| Random `Document` ID | `id_` = `file_path` | D6; Phase 2 indexes text by `doc_id` |
-| All metadata visible to the models | Four keys hidden | Q6 |
-| `__main__` with `print` | CLI with exit codes and JSON logs | Repository rules `T20`/`BLE`; same pattern as `src/health_check.py` |
-| `uv add llama-index pathspec` | `llama-index-core` and `pathspec` | Q5: no OpenAI integrations |
-
-**8.2 Discard reasons.** This table supersedes the "Planned" row for duplicates in 7.1.
+**8.2 Discard reasons.**
 
 | Code | Mechanism | Test |
 |---|---|---|
@@ -384,7 +364,7 @@ Steps 4–5 turn the filters of section 7 into the loader that later phases call
 | `empty` | No bytes, or only whitespace after decoding | `tests/test_ingestion_content.py` |
 | `duplicate` | Same sha256 as a kept file with a smaller path | `tests/test_ingestion_dedup.py` |
 
-All of them are exercised together in `tests/test_ingestion_loader_integration.py`.
+All of them are exercised together in `tests/test_ingestion_loader_integration.py`, and `tests/test_ingestion_discard_coverage.py` produces each one through the loader (9.5).
 
 **8.3 Evaluation order** (the first rejection gives the reason):
 1. Directory entry: `invalid_name` → the three ignore sources (directories are pruned) → `symlink` → `not_regular_file`.
@@ -413,15 +393,7 @@ All of them are exercised together in `tests/test_ingestion_loader_integration.p
 
 What the embedding model and the LLM see is `file_path: <path>\nlanguage: <label>\n\n<text>`. For the longest corpus path (65 characters) the visible metadata takes 95 characters, which Phase 2's splitter subtracts, in tokens, from every chunk. Each document has its own excluded-key lists. Vector stores add `doc_id`, `document_id`, `ref_doc_id`, `_node_content` and `_node_type`, none of which collides with these keys. LlamaIndex's `Document.hash` is a different value from `content_hash`.
 
-**8.6 Known limitations**
-- **UTF-16 and UTF-32:** text in these encodings is rejected (`binary` or `undecodable`).
-- **Repository-external ignore rules:** case-insensitive filesystems, `.git/info/exclude` and the global excludes file behave as in 7.4.
-- **Counts by directory:** a pruned directory counts once. The report is not file-for-file comparable with `git ls-files`.
-- **Line-ending normalization:** `len(text)` differs from `size_bytes`, and copies that differ only in CRLF/LF are not deduplicated.
-- **No line-length heuristic:** minified or generated one-line files under 1 MiB are loaded. The longest corpus line has 490 characters.
-- **Files swapped during a load:** a file replaced by a symlink after the walk is reported as `not_regular_file` if the swap happens between `lstat` and opening it.
-- **Walking cost:** the ignore policy's cost per path grows with depth². That is negligible at the corpus's depth of 6; a synthetic 1,100-level tree took about 11 s.
-- **Shared collections:** `doc_id` is unique within one repository only. Indexing several repositories into one collection would need a prefix (a Phase 3 decision).
+**8.6 Known limitations:** see the single table in 9.10.
 
 **8.7 Result on the corpus** [M], 2026-11-25 at 17:04–17:05Z. The production CLI ran under `NetworkGuard` (0 violations). The corpus was at `5c288080…`, with the same HEAD, an empty `git status` and 0 untracked files before and after the run.
 
@@ -445,12 +417,199 @@ What the embedding model and the LLM see is `file_path: <path>\nlanguage: <label
 | Spot checks | `content_hash` and `size_bytes` match `sha256sum` and `stat` for `src/models/register.py` and `README.md` |
 | Time | 9.3 ms for the load (from the log); 0.86 s for the whole process, including `uv run` and importing LlamaIndex |
 
-**8.8 Notes for Phase 2** (not fixed here)
-- **Labels without a syntax-aware parser:** `markdown`, `yaml`, `toml`, `dockerfile` and `makefile` go to the fallback splitter.
-- **`end_line` may point one line too far:** `count("\n", 0, end_char_idx)` counts past the chunk's last newline.
-- **Embedding cap:** `nomic-embed-text` accepts at most 2048 tokens, visible metadata included (8.5).
-- **Stable chunk IDs:** pass a deterministic `id_func` to the node parsers; the default is `uuid4`.
-- **Bundled NLTK and tiktoken data:** `SentenceSplitter` relies on it (8.1, venv permissions).
+**8.8 Notes for Phase 2:** moved to the risk register in 9.11.
+
+## 9. Phase 1 — Languages, tests and closure (Steps 6–7)
+
+Step 6 asks ingestion to handle several languages and leaves parsers to Phase 2, starting with the repository's primary language [D: rag_phase1.md Step 6]. The map already holds 18 extensions, 2 file names and 16 labels (Q3), so this step is a review, contract tests and documentation; nothing was added (D9).
+
+**9.1 Language labels** [M] corpus figures from `make ingest INGEST_FLAGS=--json`, 2026-11-25. Phase 2 status per [D: rag_phase2.md Steps 3–4]: "syntax-aware" = in `SYNTAX_AWARE_LANGUAGES`; "+ symbol" = also in `DEF_NODE_TYPES`.
+
+| Label | Extensions / file names | Corpus files | Corpus bytes | Phase 2 status |
+|---|---|---|---|---|
+| `python` | `.py` | 32 | 192,670 | syntax-aware + symbol |
+| `javascript` | `.js`, `.jsx` | 0 | 0 | syntax-aware + symbol |
+| `typescript` | `.ts`, `.tsx` | 0 | 0 | syntax-aware + symbol |
+| `java` | `.java` | 0 | 0 | syntax-aware |
+| `go` | `.go` | 0 | 0 | syntax-aware |
+| `rust` | `.rs` | 0 | 0 | syntax-aware |
+| `c` | `.c`, `.h` | 0 | 0 | syntax-aware |
+| `cpp` | `.cpp` | 0 | 0 | syntax-aware |
+| `ruby` | `.rb` | 0 | 0 | fallback (labelled, not in the set) |
+| `csharp` | `.cs` | 0 | 0 | fallback (labelled, not in the set) |
+| `php` | `.php` | 0 | 0 | fallback (labelled, not in the set) |
+| `markdown` | `.md` | 46 | 263,570 | fallback (prose) |
+| `yaml` | `.yaml`, `.yml` | 7 | 24,349 | fallback |
+| `toml` | `.toml` | 1 | 3,797 | fallback |
+| `dockerfile` | `Dockerfile` (exact name) | 1 | 4,964 | fallback |
+| `makefile` | `Makefile` (exact name) | 1 | 2,647 | fallback |
+
+Every row is pinned by `tests/test_ingestion_rules.py` (exact map and exact label set) and reaches a `Document` in `tests/test_ingestion_languages.py` (synthetic polyglot repository, with each ecosystem's noise discarded by reason). Hypotheses for Phase 2, not verified here [H]: a grammar name may differ from the label (`makefile`, `csharp`); `.tsx` may need its own grammar rather than `typescript`'s; a `.h` file may be C++.
+
+**9.2 Primary language** [M]
+
+| Ranking | By files | By bytes |
+|---|---|---|
+| 1 | `markdown` 46 (52.3%) | `markdown` 263,570 (53.6%) |
+| 2 | `python` 32 (36.4%) | `python` 192,670 (39.2%) |
+| 3 | `yaml` 7 | `yaml` 24,349 |
+| 4–6 | `dockerfile`, `toml`, `makefile`: 1 each | `dockerfile` 4,964, `toml` 3,797, `makefile` 2,647 |
+
+Definition used here: the primary language is the code language with the most files and bytes among the labels Phase 2 can parse. That is `python`, the only code language in the corpus. Markdown leads both rankings, but it is prose (the ADRs and the README, Q1).
+
+Share that would take Phase 2's fallback splitter on this corpus: every label except `python`, that is 56 of 88 files (63.6%) and 299,327 of 491,997 B (60.8%) [M] (label counts). Syntax-aware: 32 files (36.4%), 192,670 B (39.2%). How many chunks that means depends on Phase 2's splitters [H].
+
+**9.3 How to add a language**
+1. Get the owner's decision: labels are a contract with Phases 2 and 4.
+2. Data only, in `src/ingestion/rules.py`: add a lowercase single suffix to `DEFAULT_LANGUAGE_BY_EXTENSION`, or an exact file name to `DEFAULT_LANGUAGE_BY_FILENAME`. The label must be lowercase (`[a-z][a-z0-9_+-]*`).
+3. Tests: update `EXPECTED_EXTENSIONS` (or the file-name map) and `EXPECTED_LANGUAGES` in `tests/test_ingestion_rules.py`, and add a sample file to the polyglot repository in `tests/test_ingestion_languages.py`.
+4. Add a row to table 9.1.
+5. Phase 2: add the label to its syntax-aware set (and to its symbol node types) only if a parser exists for it; otherwise it falls back.
+6. If the corpus has files with that extension: the expected totals (88 files / 491,997 B) and the manifest change. Regenerate the manifest (Appendix P3), validate it independently, and update the key test's totals.
+
+**9.4 Files the map leaves out (D9)** [M] All 22 discarded corpus files are tracked.
+
+| Reason | Files | Paths (bytes) |
+|---|---|---|
+| `lockfile` | 2 | `uv.lock` (1,012,957), `dvc.lock` (3,846) |
+| `unmapped_type`, media and data | 7 | `docs/images/architecture.png`, `docs/videos/intro.mp4`, `docs/whitepaper.pdf`, `notebooks/01_exploration.ipynb`, `reports/metrics.json`, `reports/validation.json`, `data/raw/creditcard.csv.dvc` |
+| `unmapped_type`, text with no label | 5 | `LICENSE` (1,077), `docker/.env.example` (608), `.dvc/config` (111), `.dockerignore` (2,001), `.python-version` (5) |
+| `unmapped_type`, VCS plumbing | 8 | four `.gitignore`, `.dvcignore`, three `.gitkeep` |
+
+D9 [U] 2026-11-25: the map stays as it is. The five text files in the third row cannot answer questions (for example "which license?" or "which variables does the Docker setup need?"); mapping them would need new labels.
+
+**9.5 Definition of Done → tests** [M] `pytest --collect-only -q`; test counts per file in brackets. The checkboxes are those of [D: rag_phase1.md "Verification: The Definition of Done"].
+
+| # | Checkbox | Tests |
+|---|---|---|
+| 1 | `loader.py` traverses a repository and loads its code files | `test_ingestion_walker.py` [23], `test_ingestion_loader.py` [20] (API, CLI, determinism, no writes), `test_ingestion.py` [2] |
+| 2 | Dependencies, builds, binaries and `.gitignore` are filtered out | `test_ingestion_ignore.py` [102] (incl. a comparison with `git check-ignore`), `test_ingestion_binary.py` [22], `test_ingestion_content.py` [32], `test_ingestion_loader_integration.py` [2], `test_ingestion_filters_integration.py` [4], `test_ingestion_dedup.py` [7] |
+| 3 | Each document carries path, language, size and lines | `test_ingestion_documents.py` [79] (the six keys, visibility, `num_lines`), `test_ingestion_loader_integration.py`, `test_ingestion.py` |
+| 4 | Multiple languages through the extension map | `test_ingestion_rules.py` [48] (exact map and labels), `test_ingestion_classify.py` [96], `test_ingestion_languages.py` [5] (all 16 labels end to end) |
+| 5 | Tests verify the discards, not only the loads | Every discard is asserted with its reason; `test_ingestion_discard_coverage.py` [16] produces each of the 15 reasons through the loader and fails if a reason has no scenario |
+| 6 | Key test: the real repository gives only the relevant files | See 9.6 |
+
+Gaps closed in this step: no test loaded all 16 labels through the loader (6 did, all from the corpus shape); `unreadable` and `invalid_name` were asserted only at module level; the doc's two tests did not exist in an adapted form; there was no key test. Privacy is covered across all checkboxes by the autouse network guard and by `test_ingestion_privacy.py` [2].
+
+**9.6 Key test and manifest (Q7)**
+- **Manifest:** `tests/fixtures/corpus_manifest.tsv`, UTF-8, LF line endings, no BOM. A `#` header gives the public corpus URL, the frozen commit, the generation time and command, the columns and the totals. Then there is one line per included file, `path<TAB>language<TAB>size_bytes<TAB>sha256`, sorted by the path string (code points, like the loader). It holds no file contents. The sha256 column detects a changed tree even when HEAD matches, and it gives Phase 7 a fixed anchor.
+- **Generation** [M], 2026-11-25 at 19:42:37Z: `python -m tests.corpus_manifest` (Appendix P3) used the production loader under `NetworkGuard` (0 violations). It refuses to write unless the corpus HEAD is the frozen commit.
+- **Independent validation** [M], so that the manifest is not a copy of the code under test:
+  - All 88 paths are in `git ls-files`, sorted and unique.
+  - `sha256sum` and `stat` agree for 88 of 88 files.
+  - A literal extension map in `awk` agrees on 88 of 88 labels.
+  - The Steps 1–3 test helper (`os.walk` → `IgnorePolicy` → `classify_name` → `probe_head`) keeps the same 88 paths with the same labels.
+  - There are 0 duplicate hashes.
+  - 161 tracked files = 88 included + 22 discarded + 51 under the two pruned rule directories.
+- **Key test:** `tests/test_ingestion_corpus_integration.py`, marker `integration`, 9 tests, run with `make test-corpus`.
+  - **Skips** only when `REPO_PATH` is missing or its HEAD (read from `.git` in pure Python, without running `git`) is not `5c288080c88f0bfec435af0093a5155baaf7f343`. The skip states the path and both SHAs.
+  - **Asserts:**
+    - the exact included set and order against the manifest;
+    - `language`, `size_bytes` and `content_hash` for every file;
+    - the totals of 88 files / 491,997 B, by language and by top-level directory;
+    - that nothing comes from noise directories, lockfiles, secret-like names or unmapped extensions;
+    - the 22 tracked discards (`unmapped_type` 20, `lockfile` 2), and that the pruned directories include `.git`, `deploy/model` and `project_context`;
+    - 0 duplicates and 4 `.gitignore` files read;
+    - the six-key contract, with two visible keys, and no NUL, BOM or CR in the text;
+    - that a second load through `load_repository` is identical;
+    - that a `(mode, size, mtime_ns)` snapshot of the whole tree is unchanged, with 0 network violations.
+- **Evidence** [M]:
+  - 9 passed on this host in 0.81 s.
+  - With `REPO_PATH=/nonexistent/corpus`: 9 skipped, each with the reason.
+  - On a modified scratch copy of the corpus (one edited file and one new file, same HEAD): 4 failed, with a diff naming the path, the field and both values. Not skipped.
+  - `make test` deselects it.
+  - The test's logic is covered without the corpus by `tests/test_corpus_manifest.py` [60]: HEAD resolution (loose, packed and detached refs, worktree `.git` file, symlinks, unsafe ref names, corrupt data), the strict parser and the comparator.
+- **Not automatable:** whether the 88 files are "only the relevant code, with no junk" is the owner's judgment (section 9.8).
+
+**9.7 Contract with later phases** (read-only audit of [D: rag_phase2.md]–[D: rag_phase8.md] and [D: rag_generalRoadmap.md]; nothing was changed in them)
+
+| Phase | What it reads from Phase 1 | What Phase 1 delivers | Status |
+|---|---|---|---|
+| 2 | `{doc.doc_id: doc.text}`, `node.ref_doc_id`, `metadata["language"]` against `SYNTAX_AWARE_LANGUAGES`, `count("\n")` for line numbers, `REPO_PATH` in `__main__` (Steps 3, 4, 6) | `doc_id` = `file_path` (so `ref_doc_id` = path); text with `\n` only; 16 labels; `REPO_PATH: Final[Path]` | ✔, with risks R1–R8 |
+| 3 | `build_index(repo_path)` calls `load_repository(repo_path)`; persistent Chroma (Steps 4–5) | Unchanged signature; `NoDocumentsError` on an empty load | ✔; R6 |
+| 4 | `MetadataFilter(key="language", operator=EQ)`; the prose also mentions a directory (Step 4) | Exact labels; `directory` and `file_path` stored | ✔; R10 |
+| 5 | Citations from `metadata["file_path"]`; `__main__` with `REPO_PATH` | Relative POSIX path, visible to the LLM | ✔ |
+| 6 | `lifespan` reloads `chunk_documents(load_repository(REPO_PATH))` at every start-up; `/index` takes `repo_path` from the request (Steps 2–4) | Deterministic, writes nothing, 6.0–9.6 ms per load [M] | ✔; R12 |
+| 7 | An evaluation set of questions and references (Step 3); no file anchors | Manifest with the commit and a sha256 per file (9.6) | ⚠ R13 (informational) |
+| 8 | The README's design-decisions section | This document | ✔ |
+
+**9.8 Closure** (2026-11-25). Phase 1 Definition of Done [D: rag_phase1.md "Verification: The Definition of Done"]:
+
+| # | Checkbox | Status | Evidence |
+|---|---|---|---|
+| 1 | `loader.py` traverses a repository and loads its code files | ✔ | API and CLI tests (9.5); `make ingest` on the corpus: 88 files |
+| 2 | Dependencies, builds, binaries and `.gitignore` are filtered | ✔ | Reasons asserted (9.5), 15/15 coverage, the key test's negative checks |
+| 3 | Rich metadata per document | ✔ | The six-key contract (8.5), checked on all 88 corpus documents |
+| 4 | Multiple languages through the map | ✔ | Exact map, 16 labels end to end, inventory (9.1–9.4) |
+| 5 | Tests verify the filtering | ✔ | 9.5; `make check` green |
+| 6 | Key test: only the relevant files of a real repository | ✔ | 9.6 passes (9 of 9). The judgment was delegated by the owner ([U] 2026-11-25: "check it yourself") and made by the agent's review below |
+
+Key-test review [M], 2026-11-25, paths and structural signals only (no content read into the record):
+- **Junk among the 88:** none in the Definition of Done's sense (third-party dependencies, builds, binaries). 0 private-key headers, 0 AWS-shaped keys, 0 base64 runs of 100+ characters, 0 quoted secret assignments; no minified file (longest line 490 characters, `README.md`).
+- **Low value, but the project's own code:** `main.py` (325 B, one function, no imports; its first docstring line says it was generated, by the corpus's `uv init` commit), and six `__init__.py` files under 100 B. Kept: excluding them would need a new rule and an owner decision.
+- **Omissions:** none beyond the owner's decisions. All 18 `.py` files under `deploy/model/` have a counterpart in `src/` (8 byte-identical, 10 stale versions), so no unique code is lost (Q2). `project_context/` holds 13 `.md` files (Q1). The 22 discards are covered by Q3 and D9, and no code-like extension is left unmapped.
+
+Phase 1 is closed. Final results on the corpus are those of 8.7 and 9.6: 88 files / 491,997 B, unchanged since the Steps 1–3 preview. Nothing in `src/`, `pyproject.toml` or `uv.lock` changed in Steps 6–7.
+
+**9.9 Deviations from rag_phase1.md** (single table, Steps 1–7)
+
+| Step | Doc | This project | Why |
+|---|---|---|---|
+| 1 | `IGNORED_DIRS` matched by name at any depth | D2: unambiguous names at any depth; `build`, `dist`, `target`, `vendor` at the root only | Avoid dropping a legitimate nested `build/` or `vendor/` |
+| 1 | Every `.md` file is indexed | `project_context/` excluded | Q1 |
+| 2 | Only the root `.gitignore` | Root and nested files, plus built-in patterns and the corpus rules file | Q8, Q4; the corpus has three nested `.gitignore` files [M] |
+| 2 | `PathSpec.from_lines("gitwildmatch", …)` | `GitIgnoreSpec`, evaluated directory level by directory level | `gitwildmatch` is deprecated since `pathspec` 1.0.0; `GitIgnoreSpec` alone re-includes `build/keep.py` under `build/` + `!build/keep.py`, which Git does not [M] |
+| 3 | Extension-only map, 15 entries | 18 extensions, 2 file names, lockfiles | Q3 |
+| 3 | `is_probably_binary` reads the whole file and returns True on `OSError` | At most 1,024 bytes, never follows symlinks, does not block on FIFOs; `unreadable` is its own verdict | Bounded I/O; an I/O error says nothing about content |
+| 4 | `rglob` and `path.is_file()` (follows symlinks) | Iterative `os.scandir`, ignored directories pruned, symlinks never followed (`symlink`) | Speed, Q8, D2; nothing outside the root can be read |
+| 4 | `read_text` (universal newlines; errors skipped without a count) | Bounded read, strict UTF-8, normalization (D5), every failure counted with a reason | Determinism and traceability |
+| 4 | No size cap, no empty-file rule, no deduplication, filesystem order | `too_large`, `empty`, `duplicate`; output sorted by POSIX path | D7, Q2; the same tree gives the same output |
+| 4 | `num_lines = count("\n") + 1` | Editor-style count (D5) | The doc's formula adds a line to every file that ends with a newline (88 of 88 here) |
+| 4 | Random `Document` ID | `id_` = `file_path` | D6; Phase 2 indexes text by `doc_id` |
+| 4 | `__main__` with `print`; `uv add llama-index pathspec` | CLI with exit codes and JSON logs; `llama-index-core` and `pathspec` only | Ruff `T20`/`BLE`; Q5 |
+| 5 | All metadata visible to the models | Four keys hidden | Q6 |
+| 6 | "Expanding it is as simple as adding more extensions" | Review only: contract tests and documentation; the map is unchanged | Q3 already expanded it; labels are a contract (D9) |
+| 7 | Two tests that assert absence (`logo.png` and `secret.py` each have two possible causes) | Single-cause noise with the reason asserted, a 15-reason meta-test, the polyglot repository | A passing absence test cannot tell which filter worked |
+| DoD | Key test by inspection | Versioned manifest, `integration` test and the owner's confirmation | Q7 |
+
+**9.10 Known limitations** (single table; 7.4's "NUL after the first KiB" is resolved by Step 4's decoded-text check)
+
+| Limitation | Effect |
+|---|---|
+| UTF-16 and UTF-32 | Rejected as `binary` or `undecodable` |
+| Case-sensitive matching | Like Git with `core.ignorecase=false`; may differ on case-insensitive filesystems |
+| Repository-external ignore rules | `.git/info/exclude`, the global excludes file and `.gitattributes` are not read, so results do not depend on the machine |
+| Exact build-file names | `Dockerfile.dev`, `dockerfile`, `makefile` get no label (tested in `test_ingestion_languages.py`) |
+| Broad secret globs | `*secret*` and `*credentials*` also drop files such as `secrets_manager.py`; visible in the reason counts |
+| Invalid ignore patterns | `pathspec` 1.1.1 raises on `[z-a]`, a lone `!` or `\`; Git ignores such lines; counted as invalid lines (D3) |
+| Counts by directory | A pruned directory counts once; the report is not file-for-file comparable with `git ls-files` |
+| Line-ending normalization | `len(text)` differs from `size_bytes`; copies differing only in CRLF/LF are not deduplicated |
+| No line-length heuristic | Minified or generated files under 1 MiB load whole (a 32 KiB one-line file is a single line); the longest corpus line has 490 characters |
+| Files swapped during a load | A file replaced by a symlink between `lstat` and opening is reported as `not_regular_file` |
+| Walking cost | The ignore policy's cost per path grows with depth²: negligible at the corpus's depth of 6; a synthetic 1,100-level tree took about 11 s |
+| `doc_id` scope | Unique within one repository only |
+| Unlabelled text (D9) | `LICENSE`, `docker/.env.example`, `.dvc/config`, `.dockerignore`, `.python-version` cannot answer questions |
+| One real codebase (D11) | Only this monolingual corpus was loaded for real; multi-language support rests on the synthetic polyglot repository |
+| Key test portability | Needs the corpus; skips elsewhere (its logic is tested without it), and skips for a worktree or submodule `.git` file, which is not followed |
+| `integration` marker | `make test-integration` also runs the two Phase 0 tests that need Ollama; the marker's description in `pyproject.toml` mentions Ollama only (owner's item) |
+
+**9.11 Risk register for Phase 2 and later** (not fixed in Phase 1; [H] = hypothesis, not verified)
+
+| # | Risk | Evidence | Recommendation |
+|---|---|---|---|
+| R1 | Most of the corpus takes the fallback splitter: 56/88 files, 299,327 B; Markdown alone is 53.6% of the bytes | 9.2 | Decide in Phase 2 whether prose deserves its own splitter |
+| R2 | `ruby`, `csharp`, `php` are labelled but not in `SYNTAX_AWARE_LANGUAGES`; `DEF_NODE_TYPES` covers only Python, JavaScript and TypeScript | [D: rag_phase2.md Steps 3–4] | Extend per label only when a corpus needs it |
+| R3 | Grammar names may differ from labels (`makefile`, `csharp`); `.tsx` and `.h` may need other grammars [H] | 9.1 | Map label → grammar explicitly in Phase 2 |
+| R4 | `end_line = count("\n", 0, end_char_idx) + 1` points one line too far when a chunk ends with its newline | [D: rag_phase2.md Step 4] | Test start and end lines against the source |
+| R5 | `nomic-embed-text` accepts 2048 tokens, visible metadata included (95 characters for the longest path) | 2.3, 8.5 | Keep chunk plus metadata under the cap |
+| R6 | Default node IDs are `uuid4`: re-indexing into a persistent store would duplicate chunks; Qdrant needs UUID or integer point IDs [H] | [D: rag_phase3.md Step 5], [D: rag_generalRoadmap.md §5] | A deterministic `id_func` (for example a UUID5 of path and position) |
+| R7 | The doc's chunker uses `except Exception` and `print` | [D: rag_phase2.md Step 6] | Ruff `BLE`/`T20`: narrow the exception; reuse the loader's CLI pattern |
+| R8 | No line-length heuristic: a one-line file reaches the splitter whole | 9.10 | Check how `CodeSplitter` handles a line longer than `max_chars` [H] |
+| R9 | The bundled NLTK and tiktoken data work offline only in a `.venv` without hardlinks or group write | 8.1 | Add dependencies with `umask 022`, or run `make install` afterwards; never set `NLTK_DATA` or `TIKTOKEN_CACHE_DIR` |
+| R10 | An `EQ` filter on `directory` does not include subdirectories [H] | [D: rag_phase4.md Step 4] | Decide prefix semantics in Phase 4 |
+| R11 | `doc_id` is unique per repository only | 9.10 | Prefix IDs if several repositories share a collection (Phase 3) |
+| R12 | `/index` loads a path chosen by the API client; empty or missing roots raise typed errors; the endpoint loads twice | [D: rag_phase6.md Steps 3–4] | Allow-list paths; map `NoDocumentsError` and `RepositoryRootError` to 4xx |
+| R13 | Evaluation answers are not tied to a corpus version | [D: rag_phase7.md Step 3] | Record the corpus commit and the manifest with each RAGAS run |
 
 ## Appendix: Evidence and reproduction
 
@@ -470,6 +629,8 @@ What the embedding model and the LLM see is `file_path: <path>\nlanguage: <label
 | C4 | `git -C <corpus> ls-files -s -z`, grouped by blob ID | Byte-identical duplicates (8 `deploy/model` ↔ `src`) |
 | P1 | `git -C <corpus> ls-files -z`, then the Steps 1–3 preview script via `uv run --locked --offline python -I`, from a new `mktemp -d` folder | Section 7.5: 88 files / 491,997 B and the discard reasons |
 | P2 | `make ingest INGEST_FLAGS="--repo ~/repos/project-to-index"` (also with `--list` and `--json`) | Section 8.7: 88 files / 491,997 B, discard reasons and pruned directories |
+| P3 | Only after an owner decision that changes the expected files. First check that `git -C <corpus> rev-parse HEAD` is the frozen SHA and `GIT_OPTIONAL_LOCKS=0 git -C <corpus> status --porcelain` is empty. Then run `uv run --locked --offline python -m tests.corpus_manifest --out tests/fixtures/corpus_manifest.tsv` from this repository's root. Validate independently: the paths against `git -C <corpus> ls-files -z`, every row against `sha256sum` and `stat`, and the set against a second traversal (the Steps 1–3 helper `_filter_tree`) | The manifest of section 9.6 |
+| P4 | `make test-corpus` (`pytest -m integration -rs tests/test_ingestion_corpus_integration.py`) | The key test (9.6). `make test-integration` also runs it, together with the two Phase 0 tests that need Ollama |
 
 C3 is a stdlib-only script, not versioned in this repository, and imports no networking modules. It does not follow symlinks and handles paths as bytes. Per file it records:
 - a binary flag (NUL byte in the first KiB), lines as `count("\n") + 1`, and UTF-8 validity;
