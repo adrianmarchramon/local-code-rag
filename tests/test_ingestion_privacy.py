@@ -23,6 +23,14 @@ IMPORTS_UNDER_GUARD: tuple[str, ...] = (
     "src.ingestion.ignore",
     "src.ingestion.classify",
     "src.ingestion.binary",
+    # Step 4-5 (appended): LlamaIndex and the loader stack.
+    "llama_index.core",
+    "src.ingestion.walker",
+    "src.ingestion.content",
+    "src.ingestion.documents",
+    "src.ingestion.dedup",
+    "src.ingestion.report",
+    "src.ingestion.loader",
 )
 
 _CHILD = textwrap.dedent(
@@ -92,3 +100,87 @@ def test_ingestion_imports_and_filters_make_no_network_access(tmp_path: Path) ->
     assert report["already_loaded"] == []  # nothing was imported before the guard
     assert report["violations"] == []
     assert report["verdicts"] == [False, True, "python", "text"]
+
+
+# --- Step 4-5: a full load, LlamaIndex's bundled caches, and no writes outside a temp dir ---
+
+_LOAD_CHILD = textwrap.dedent(
+    """
+    import json, sys
+    from pathlib import Path
+
+    repo_root, work = sys.argv[1], Path(sys.argv[2])
+    sys.path.insert(0, repo_root)
+    from src.network_guard import NetworkGuard
+
+    with NetworkGuard() as guard:
+        from llama_index.core.schema import MetadataMode
+        from llama_index.core.utils import get_tokenizer, globals_helper
+        from src.ingestion.loader import load_repository_with_report
+
+        repo = work / "repo"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src" / "a.py").write_text("def f():\\n    return 1\\n")
+        (repo / "README.md").write_text("# Title\\n\\nOne. Two.\\n")
+        result = load_repository_with_report(
+            repo, rules_file=Path(repo_root) / "config" / "ingest.ignore"
+        )
+        seen = {
+            mode.name: [d.get_content(metadata_mode=mode) for d in result.documents]
+            for mode in MetadataMode
+        }
+        # What Phase 2 will use: these must come from the caches bundled in the wheel.
+        tokens = len(get_tokenizer()("def f(): return 1"))
+        stopwords = len(globals_helper.stopwords)
+        sentences = len(globals_helper.punkt_tokenizer.tokenize("One. Two."))
+    outside_repo = sorted(
+        p.relative_to(work).as_posix() for p in work.rglob("*") if "repo" not in p.parts
+    )
+    print(json.dumps({
+        "violations": [repr(v) for v in guard.violations],
+        "doc_ids": [d.doc_id for d in result.documents],
+        "embed_hides_hash": all("content_hash" not in t for t in seen["EMBED"]),
+        "tokens": tokens,
+        "stopwords": stopwords,
+        "sentences": sentences,
+        "files_written_outside_repo": outside_repo,
+    }))
+    """
+)
+
+
+def test_full_load_and_bundled_caches_need_no_network_and_write_nothing(
+    tmp_path: Path,
+) -> None:
+    # Production-like environment: HOME, XDG_CACHE_HOME and TMPDIR (where tiktoken and
+    # NLTK would download to) point to an empty directory; NLTK_DATA and
+    # TIKTOKEN_CACHE_DIR stay unset, because setting them disables the bundled caches.
+    work = tmp_path / "work"
+    work.mkdir()
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(work),
+        "XDG_CACHE_HOME": str(work),
+        "TMPDIR": str(work),
+        "LC_ALL": "C.UTF-8",
+    }
+
+    result = subprocess.run(  # noqa: S603 (this interpreter, a constant script)
+        [sys.executable, "-I", "-B", "-c", _LOAD_CHILD, str(REPO_ROOT), str(work)],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["violations"] == []
+    assert report["doc_ids"] == ["README.md", "src/a.py"]
+    assert report["embed_hides_hash"] is True
+    assert report["tokens"] > 0
+    assert report["stopwords"] > 0
+    assert report["sentences"] == 2
+    assert report["files_written_outside_repo"] == []
