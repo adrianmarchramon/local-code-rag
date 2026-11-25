@@ -16,6 +16,10 @@ Values are validated fail-closed at import time, without network access or file 
   A relative value is taken relative to this repository's root, not the working
   directory; ``~/`` expands from ``HOME``. Paths are built lexically: whether the file
   exists is checked by the ingestion code that reads it, never here.
+* ``REPO_PATH`` (Phase 1) is the repository to index, by default
+  ``~/repos/project-to-index``. It must be absolute or start with ``~/`` (a relative path
+  would depend on the working directory); ``~`` expands from ``HOME``. Whether it exists
+  is checked by the loader, never here.
 
 An invalid value raises :class:`src.errors.ConfigurationError` with an actionable message.
 """
@@ -55,6 +59,22 @@ DEFAULT_LLM_CONTEXT_WINDOW: Final = DERIVED_MODEL_NUM_CTX
 # Lexical only (no resolve/exists/stat): importing this module must not touch the disk.
 _PROJECT_ROOT: Final = Path(__file__).absolute().parents[1]
 DEFAULT_INGEST_IGNORE_FILE: Final = _PROJECT_ROOT / "config" / "ingest.ignore"
+_REPO_UNDER_HOME: Final = ("repos", "project-to-index")  # rag_phase1.md Step 4
+
+
+def _absolute_home(home: str | None) -> Path | None:
+    """``home`` as a Path if it is a usable absolute path, else None (lexical only)."""
+    candidate = (home or "").strip()
+    if not candidate or "\0" in candidate or not Path(candidate).is_absolute():
+        return None
+    return Path(candidate)
+
+
+_PROCESS_HOME: Final = _absolute_home(os.environ.get("HOME"))
+# Expanded from the HOME of this process when it is imported (a lexical join, no disk
+# access). Without a usable HOME it stays unexpanded, and load_settings rejects it unless
+# REPO_PATH is set.
+DEFAULT_REPO_PATH: Final[Path] = (_PROCESS_HOME or Path("~")).joinpath(*_REPO_UNDER_HOME)
 
 _HOST_LABEL: Final = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _HOSTNAME_RE: Final = re.compile(rf"{_HOST_LABEL}(?:\.{_HOST_LABEL})*")
@@ -72,6 +92,7 @@ class Settings:
     llm_context_window: int
     local_allowed_hosts: frozenset[str]
     ingest_ignore_file: Path = DEFAULT_INGEST_IGNORE_FILE
+    repo_path: Path = DEFAULT_REPO_PATH
 
 
 def load_settings(env: Mapping[str, str]) -> Settings:
@@ -89,6 +110,7 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         ),
         local_allowed_hosts=allowed_hosts,
         ingest_ignore_file=_parse_ingest_ignore_file(env),
+        repo_path=_parse_repo_path(env),
     )
 
 
@@ -223,6 +245,39 @@ def _parse_ingest_ignore_file(env: Mapping[str, str]) -> Path:
     return path if path.is_absolute() else _PROJECT_ROOT / path
 
 
+def _parse_repo_path(env: Mapping[str, str]) -> Path:
+    name = "REPO_PATH"
+    fix = "Set REPO_PATH to an absolute path, or to one starting with ~/."
+    if env.get(name) is None:
+        # HOME from the given environment wins; a mapping without HOME (e.g. {}) falls
+        # back to the HOME this process had at import time.
+        home = _absolute_home(env["HOME"]) if "HOME" in env else _PROCESS_HOME
+        if home is None:
+            raise ConfigurationError(
+                f"{name} is not set and HOME is not an absolute path, so the default "
+                f"~/repos/project-to-index cannot be expanded. {fix}"
+            )
+        return home.joinpath(*_REPO_UNDER_HOME)
+    value = _read(env, name, "~/repos/project-to-index")
+    if "\0" in value:
+        raise ConfigurationError(f"{name} contains a NUL character; give a valid directory path.")
+    if value == "~" or value.startswith("~/"):
+        user_home = _absolute_home(env.get("HOME"))
+        if user_home is None:
+            raise ConfigurationError(
+                f"{name}={value!r} starts with '~' but HOME is not an absolute path. {fix}"
+            )
+        value = str(user_home) + value[1:]
+    elif value.startswith("~"):
+        raise ConfigurationError(f"{name}={value!r}: '~user' paths are not supported. {fix}")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ConfigurationError(
+            f"{name}={value!r} is relative, so it would depend on the working directory. {fix}"
+        )
+    return path
+
+
 # Fail-closed validation at import time (the only import-time side effect in this package).
 SETTINGS: Final[Settings] = load_settings(os.environ)
 
@@ -233,3 +288,4 @@ REQUEST_TIMEOUT: Final[float] = SETTINGS.request_timeout
 LLM_CONTEXT_WINDOW: Final[int] = SETTINGS.llm_context_window
 LOCAL_ALLOWED_HOSTS: Final[frozenset[str]] = SETTINGS.local_allowed_hosts
 INGEST_IGNORE_FILE: Final[Path] = SETTINGS.ingest_ignore_file
+REPO_PATH: Final[Path] = SETTINGS.repo_path

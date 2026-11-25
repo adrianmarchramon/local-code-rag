@@ -58,3 +58,15 @@ class IgnoreRulesError(IngestionError):
     Fatal on purpose (fail-closed): indexing without the project's ignore rules could
     index exactly what the project meant to hide.
     """
+
+
+class RepositoryRootError(IngestionError):
+    """The repository to ingest does not exist or is not a directory (fatal)."""
+
+
+class NoDocumentsError(IngestionError):
+    """The repository root is valid but nothing in it passed the filters (decision D8).
+
+    Raised by ``load_repository`` so that an empty index is never built silently; the
+    function that also returns the load report returns the empty result instead.
+    """

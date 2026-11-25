@@ -227,7 +227,8 @@ def test_ingestion_errors_belong_to_the_project_hierarchy() -> None:
 
 
 def test_discard_reason_codes_are_stable() -> None:
-    assert [reason.value for reason in DiscardReason] == [
+    # The Steps 1-3 codes keep their values and positions; later codes are appended.
+    assert [reason.value for reason in DiscardReason][:9] == [
         "builtin_pattern",
         "corpus_rules",
         "gitignore",
@@ -244,3 +245,24 @@ def test_discard_reasons_are_plain_strings() -> None:
     assert isinstance(DiscardReason.LOCKFILE, str)
     assert str(DiscardReason.LOCKFILE) == "lockfile"
     assert f"{DiscardReason.SECRET_NAME}" == "secret_name"
+
+
+def test_step4_discard_reasons_are_appended_after_the_original_nine() -> None:
+    assert [reason.value for reason in DiscardReason][9:] == [
+        "symlink",
+        "too_large",
+        "undecodable",
+        "empty",
+        "duplicate",
+        "invalid_name",
+    ]
+
+
+def test_default_max_file_bytes_follows_decision_d7() -> None:
+    assert IngestionRules().max_file_bytes == 1024 * 1024
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_invalid_max_file_bytes_fails_at_construction(value: object) -> None:
+    with pytest.raises(IngestionError, match="max_file_bytes"):
+        IngestionRules(max_file_bytes=value)  # type: ignore[arg-type]

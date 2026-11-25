@@ -7,6 +7,7 @@ existing values never change; later steps only add new members (``symlink``, ``e
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum, unique
 
 
@@ -14,7 +15,9 @@ from enum import StrEnum, unique
 class DiscardReason(StrEnum):
     """Why a path was not ingested; only the first filter that rejects it is recorded.
 
-    Members are listed in evaluation order, cheapest check first.
+    The first nine members (Steps 1-3) are listed in evaluation order, cheapest check
+    first. Later members are appended (append-only), so declaration order is no longer
+    evaluation order; the loader's module docstring gives the full order.
     """
 
     BUILTIN_PATTERN = "builtin_pattern"  # generic noise: dependencies, caches, builds, .git
@@ -27,3 +30,18 @@ class DiscardReason(StrEnum):
     BINARY = "binary"  # NUL byte in the first bytes read
     UNREADABLE = "unreadable"  # could not be opened or read (permissions, I/O error)
     NOT_REGULAR_FILE = "not_regular_file"  # symlink, FIFO, socket, device, directory
+    # --- Step 4 (appended) ---
+    SYMLINK = "symlink"  # a symbolic link (file or directory, broken or not); never followed
+    TOO_LARGE = "too_large"  # larger than IngestionRules.max_file_bytes
+    UNDECODABLE = "undecodable"  # not valid UTF-8
+    EMPTY = "empty"  # no bytes, or only whitespace after decoding
+    DUPLICATE = "duplicate"  # same bytes as a kept file with a smaller POSIX path
+    INVALID_NAME = "invalid_name"  # not valid UTF-8, or contains a backslash or control char
+
+
+@dataclass(frozen=True, slots=True)
+class Discard:
+    """A repository-relative POSIX path that was left out, with the reason that excluded it."""
+
+    rel_path: str
+    reason: DiscardReason

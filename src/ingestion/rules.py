@@ -81,6 +81,7 @@ DEFAULT_BUILTIN_PATTERNS: Final[tuple[str, ...]] = (
 )
 DEFAULT_HEAD_BYTES: Final = 1024  # rag_phase1.md Step 3: NUL check on the first KiB
 DEFAULT_MAX_GITIGNORE_BYTES: Final = 1024 * 1024  # D3: larger corpus .gitignore files fail
+DEFAULT_MAX_FILE_BYTES: Final = 1024 * 1024  # D7: larger files are skipped as too_large
 
 _EXTENSION_RE: Final = re.compile(r"\.[a-z0-9_+-]+")
 _LABEL_RE: Final = re.compile(r"[a-z][a-z0-9_+-]*")
@@ -193,6 +194,7 @@ class IngestionRules:
     secret_name_patterns: tuple[SecretNamePattern, ...] = DEFAULT_SECRET_NAME_PATTERNS
     head_bytes: int = DEFAULT_HEAD_BYTES
     max_gitignore_bytes: int = DEFAULT_MAX_GITIGNORE_BYTES
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
 
     def __post_init__(self) -> None:
         by_extension = _readonly_mapping(self.language_by_extension, "language_by_extension")
@@ -219,6 +221,7 @@ class IngestionRules:
                 )
         _check_positive(self.head_bytes, "head_bytes")
         _check_positive(self.max_gitignore_bytes, "max_gitignore_bytes")
+        _check_positive(self.max_file_bytes, "max_file_bytes")
 
         object.__setattr__(self, "language_by_extension", by_extension)
         object.__setattr__(self, "language_by_filename", by_filename)

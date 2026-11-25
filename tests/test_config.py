@@ -285,3 +285,103 @@ def test_missing_ingest_ignore_file_does_not_fail_at_import_time(tmp_path: Path)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(missing)
+
+
+# --- REPO_PATH (Phase 1, Step 4) -----------------------------------------------------------------
+
+
+def test_repo_path_defaults_under_the_given_home(tmp_path: Path) -> None:
+    settings = load_settings({"HOME": str(tmp_path)})
+
+    assert settings.repo_path == tmp_path / "repos" / "project-to-index"
+
+
+def test_repo_path_constant_mirrors_the_loaded_settings() -> None:
+    assert isinstance(config.REPO_PATH, Path)
+    assert config.SETTINGS.repo_path == config.REPO_PATH
+
+
+def test_repo_path_absolute_override_is_kept(tmp_path: Path) -> None:
+    target = tmp_path / "some" / "repo"
+
+    assert load_settings({"REPO_PATH": str(target)}).repo_path == target
+
+
+def test_repo_path_expands_home(tmp_path: Path) -> None:
+    settings = load_settings({"REPO_PATH": "~/code/repo", "HOME": str(tmp_path)})
+
+    assert settings.repo_path == tmp_path / "code" / "repo"
+
+
+@pytest.mark.parametrize(
+    ("env", "match"),
+    [
+        ({"REPO_PATH": ""}, "empty"),
+        ({"REPO_PATH": "   "}, "empty"),
+        ({"REPO_PATH": "a\0b"}, "NUL"),
+        ({"REPO_PATH": "repos/project"}, "relative"),
+        ({"REPO_PATH": "./repo"}, "relative"),
+        ({"REPO_PATH": "~/repo"}, "HOME"),
+        ({"REPO_PATH": "~/repo", "HOME": "relative/home"}, "HOME"),
+        ({"REPO_PATH": "~someone/repo"}, "~user"),
+        ({"HOME": ""}, "HOME"),
+        ({"HOME": "relative/home"}, "HOME"),
+    ],
+)
+def test_invalid_repo_path_is_rejected(env: dict[str, str], match: str) -> None:
+    with pytest.raises(ConfigurationError, match=match) as exc_info:
+        load_settings(env)
+
+    assert "REPO_PATH" in str(exc_info.value)
+
+
+def test_repo_path_parsing_never_touches_the_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("load_settings touched the filesystem")
+
+    for name in ("stat", "lstat", "exists", "is_dir", "resolve", "expanduser", "home"):
+        monkeypatch.setattr(Path, name, forbidden)
+    monkeypatch.setattr(os, "stat", forbidden)
+    monkeypatch.setattr(os.path, "expanduser", forbidden)
+
+    settings = load_settings({"REPO_PATH": "~/missing", "HOME": str(tmp_path)})
+
+    assert settings.repo_path == tmp_path / "missing"
+
+
+def _import_config_with(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", "import src.config as c; print(c.REPO_PATH)"],
+        cwd=REPO_ROOT,
+        env={"PATH": os.environ.get("PATH", ""), **env},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_repo_path_default_follows_home_at_import(tmp_path: Path) -> None:
+    result = _import_config_with({"HOME": str(tmp_path)})
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(tmp_path / "repos" / "project-to-index")
+
+
+def test_missing_repo_path_does_not_fail_at_import_time(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist"
+
+    result = _import_config_with({"HOME": str(tmp_path), "REPO_PATH": str(missing)})
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(missing)
+
+
+def test_import_fails_closed_without_home_or_repo_path() -> None:
+    result = _import_config_with({})
+
+    assert result.returncode != 0
+    assert "ConfigurationError" in result.stderr
+    assert "REPO_PATH" in result.stderr
