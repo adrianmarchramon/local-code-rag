@@ -15,7 +15,8 @@ help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-18s %s\n", $$1, $$2}'
 
 install: ## Create/refresh .venv exactly from uv.lock (network: PyPI, only when packages are missing)
-	$(UV) sync --locked
+	@# umask 022: no group-writable files in .venv (nltk refuses such data directories).
+	umask 022 && $(UV) sync --locked
 
 hooks: ## Install the git pre-commit hook (local ruff hooks, no network)
 	$(UV_RUN) pre-commit install
@@ -45,6 +46,14 @@ check: lint format-check typecheck test ## Run all quality gates
 .PHONY: verify-local
 verify-local: ## Verify local generation + embeddings under the network guard (needs Ollama + models)
 	$(UV_RUN) python -m src.health_check
+
+# --- Ingestion (Phase 1, Step 4) ---------------------------------------------------------
+# Read-only and offline: loads REPO_PATH (or --repo) and prints what was kept and why.
+# Examples: make ingest INGEST_FLAGS="--list"; make ingest INGEST_FLAGS="--json --repo /path"
+INGEST_FLAGS ?=
+.PHONY: ingest
+ingest: ## Load REPO_PATH with the Phase 1 filters and print the report (offline, read-only)
+	$(UV_RUN) python -m src.ingestion.loader $(INGEST_FLAGS)
 
 # --- Model provisioning (Phase 0, Steps 3 and 5) -----------------------------------------
 # make cannot import src/config.py, so these names repeat it on purpose and

@@ -12,6 +12,7 @@ from pathlib import Path
 from src.ingestion.binary import probe_head
 from src.ingestion.classify import classify_name
 from src.ingestion.ignore import IgnorePolicy
+from src.ingestion.loader import load_repository_with_report
 from src.ingestion.reasons import DiscardReason
 from src.ingestion.rules import IngestionRules
 
@@ -152,3 +153,34 @@ def test_filtering_is_deterministic(tmp_path: Path) -> None:
     second = _filter_tree(tmp_path, IngestionRules(), RULES_FILE)
 
     assert first == second
+
+
+def test_step4_loader_agrees_with_the_steps_1_to_3_helper(tmp_path: Path) -> None:
+    _make_corpus_shaped_repo(tmp_path)
+    kept, dropped = _filter_tree(tmp_path, IngestionRules(), RULES_FILE)
+
+    result = load_repository_with_report(tmp_path, rules_file=RULES_FILE)
+
+    # Same included set before deduplication: the helper does not deduplicate, and most
+    # included files of this tree have identical invented content.
+    duplicates = {d.discarded for d in result.report.duplicates}
+    assert {d.doc_id for d in result.documents} | duplicates == set(kept)
+    assert {d.doc_id: d.metadata["language"] for d in result.documents}.items() <= kept.items()
+    # Same reason for every Steps 1-3 code. Files under a pruned directory are not listed by
+    # the loader: the directory carries the reason. A symlink now gets the Step 4 code.
+    files = {d.rel_path: d.reason for d in result.discarded}
+    pruned = {d.rel_path: d.reason for d in result.pruned}
+    steps_1_to_3 = set(list(DiscardReason)[:9])
+    for path, reason in dropped.items():
+        if path in files:
+            got = files[path]
+        else:
+            got = next(r for d, r in pruned.items() if path.startswith(f"{d}/"))
+        if got in steps_1_to_3:
+            assert got == reason, path
+        else:
+            assert (path, reason, got) == (
+                "src/link.py",
+                DiscardReason.NOT_REGULAR_FILE,
+                DiscardReason.SYMLINK,
+            )
