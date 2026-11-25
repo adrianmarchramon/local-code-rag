@@ -55,6 +55,13 @@ INGEST_FLAGS ?=
 ingest: ## Load REPO_PATH with the Phase 1 filters and print the report (offline, read-only)
 	$(UV_RUN) python -m src.ingestion.loader $(INGEST_FLAGS)
 
+# --- Phase 1 key test (Step 7) ------------------------------------------------------------
+# Only the corpus key test, not the Ollama integration tests: offline and read-only. It skips,
+# with the reason, if REPO_PATH is missing or its HEAD is not the frozen commit.
+.PHONY: test-corpus
+test-corpus: ## Phase 1 key test on the frozen corpus at REPO_PATH (offline, read-only; no Ollama)
+	$(UV_RUN) pytest -m integration -rs tests/test_ingestion_corpus_integration.py
+
 # --- Model provisioning (Phase 0, Steps 3 and 5) -----------------------------------------
 # make cannot import src/config.py, so these names repeat it on purpose and
 # tests/test_model_provisioning.py fails if they drift. The PROVISION_ prefix avoids
