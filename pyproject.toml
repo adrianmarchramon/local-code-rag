@@ -5,6 +5,7 @@ description = "A 100% local, privacy-first RAG system for codebases."
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.28.1",
+    "llama-index-core>=0.14.26",
     "ollama>=0.6.3",
     "pathspec>=1.1.1",
 ]
@@ -16,6 +17,12 @@ dev = [
     "pytest>=9.2.0",
     "ruff>=0.17.6",
 ]
+
+[tool.uv]
+# Copy files into .venv instead of hardlinking them to the uv cache: nltk refuses to load
+# data files with more than one link, so llama-index-core's bundled NLTK cache would be
+# rejected and it would try to download the data instead (docs/decisions.md, section 8).
+link-mode = "copy"
 
 [tool.ruff]
 line-length = 100
