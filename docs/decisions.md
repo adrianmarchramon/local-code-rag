@@ -148,6 +148,8 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | `uv add --offline httpx` | 2026-11-24 | none | Nothing (no download) | 0 / Step 4 | [H] |
 | Public tag list read (`qwen3-coder`) | 22:56:41–22:57:29Z | ollama.com | One HTTP GET; no repository data | 0 / Step 7 | [M] |
 | Corpus `git clone` (run by the owner) | 23:06:36Z (from the reflog) | github.com (HTTPS) | Clone request | 0 / Step 6 | [M] |
+| Public documentation reads (PyPI JSON for `llama-index` and `llama-index-core`, three `llama-index-core` source files, Chroma docs: 6 URLs) | 2026-11-25 13:27:45–13:28:55Z | pypi.org, raw.githubusercontent.com, docs.trychroma.com | HTTP GETs; no repository data | 1 / preparation | [S] |
+| `uv add --offline pathspec` (previewed first on scratch copies of `pyproject.toml` and `uv.lock`) | 2026-11-25 15:28:59Z | none | Nothing (no download; 1.1.1 was already in the uv cache) | 1 / Steps 1–3 | [M] |
 
 **3.4 Controls matrix**
 
@@ -231,6 +233,103 @@ Ruff configuration: this repository keeps its own settings (line length 100, py3
 | Offline-test connectivity evidence | Closed [U] | Appendix A5 |
 | Corpus limitations | Small (109 loadable files), monolingual, prose-heavy, 8 duplicated files, DVC data absent | Revisit in Phases 1 and 7 |
 
+## 7. Phase 1 — Ingestion filtering (Steps 1–3)
+
+Steps 1–3 decide what may enter the searchable universe: the rules as data, the ignore policy and the per-file classification [D: rag_phase1.md Steps 1–3]. Step 4 adds the directory walker, reading and decoding, the size cap, empty files, deduplication and the `Document` objects. Code: `src/ingestion/{reasons,rules,ignore,classify,binary}.py`; corpus rules: `config/ingest.ignore`.
+
+**7.1 Noise categories**
+
+| Category | Mechanism | Reason code | Test | Status |
+|---|---|---|---|---|
+| Third-party dependencies | Built-in patterns `node_modules/`, `.venv/`, `venv/`, `site-packages/` (any depth), `/vendor/` (root only) | `builtin_pattern` | `tests/test_ingestion_ignore.py` | Done |
+| Builds, caches, VCS metadata | Built-in `__pycache__/`, `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`, `.next/` (any depth), `/build/`, `/dist/`, `/target/` (root only), `.git` (always) | `builtin_pattern` | `tests/test_ingestion_ignore.py` | Done |
+| What the project ignores | The corpus's `.gitignore` files, root and nested, with Git semantics | `gitignore` | `tests/test_ingestion_ignore.py`, including a comparison with `git check-ignore` | Done |
+| Corpus-specific noise and prose | `config/ingest.ignore`: `/deploy/model/` (Q2) and `/project_context/` (Q1) | `corpus_rules` | `tests/test_ingestion_ignore.py` (the versioned file itself) | Done |
+| Lockfiles | Nine exact file names (Q3) | `lockfile` | `tests/test_ingestion_classify.py` | Done |
+| Secrets | File-name globs (D4); the file is never opened | `secret_name` | `tests/test_ingestion_classify.py` | Done |
+| Data, notebooks, media, serialized models | Not in the language map (`.json`, `.csv`, `.ipynb`, `.pkl`, `.joblib`, `.png`, `.pdf`, `.mp4`, …) | `unmapped_type` | `tests/test_ingestion_classify.py` | Done |
+| Disguised binaries | NUL byte in the first 1,024 bytes | `binary` | `tests/test_ingestion_binary.py` | Done |
+| Unreadable and special files | Open without following symlinks and without blocking; read failures are a verdict, not a crash | `unreadable`, `not_regular_file` | `tests/test_ingestion_binary.py` | Done |
+| Duplicates | sha256 of the content; the lexicographically smallest POSIX path is kept (Q2) | `duplicate` | — | Planned, Step 4 |
+
+All of them are exercised together on a synthetic, corpus-shaped tree in `tests/test_ingestion_filters_integration.py`.
+
+**7.2 Decisions**
+
+| ID | Decision | Source |
+|---|---|---|
+| Q1 | Index `docs/` (44 ADRs and their index) and the root `README.md`; exclude the corpus's `project_context/` (13 `.md` files, 299,816 B) | [U] 2026-11-25; [M] |
+| Q2 | Exclude `deploy/model/` (38 files, 1,477,368 B; its 18 `.py` are a stale copy of `src/`) and deduplicate by sha256 in Step 4 | [U] 2026-11-25; [M] |
+| Q3 | Language map = the Step 3 map plus `.yaml`/`.yml` → `yaml` and `.toml` → `toml`; `Dockerfile` and `Makefile` by exact file name; nine lockfiles excluded by name; notebooks, JSON and TXT stay out | [U] 2026-11-25 |
+| Q4 | Corpus rules live in a versioned gitignore-syntax file; its path is `INGEST_IGNORE_FILE` in `src/config.py` (environment override; a relative value is relative to this repository's root; no disk access at import) | [U] 2026-11-25 |
+| Q8 | Root and nested `.gitignore` files with Git semantics: each applies relative to its own directory, the deepest one with a matching pattern wins, and nothing under an excluded directory can be re-included | [U] 2026-11-25 |
+| D1 | Rules file `config/ingest.ignore` with exactly `/deploy/model/` and `/project_context/`. Defensive rules for `notebooks/`, `reports/`, `data/` and `.dvc/` were not added: they hold 0 files with a mapped extension | [U] 2026-11-25; [M] |
+| D2 | Built-in patterns: unambiguous names at any depth; `build`, `dist`, `target`, `vendor` at the root only, so a legitimate nested `build/` survives. No such directory exists in the corpus | [U] 2026-11-25; [M] |
+| D3 | A corpus `.gitignore` that is unreadable, not UTF-8, larger than 1 MiB, or a symlink (or under one) stops ingestion with `IgnoreRulesError` (fail-closed). A single invalid pattern line is skipped with a WARNING (file and line number, no content). The versioned rules file is strict: any invalid line is an error | [U] 2026-11-25 |
+| D4 | Exclude and count file names matching `.env`, `.env.*` (except `*.example`, `*.sample`, `*.template`), `*.pem`, `*.key`, `id_rsa*`, `*credentials*`, `*secret*`, on the base name, case-insensitively, before the language check. 0 matches in the corpus | [U] 2026-11-25; [M] |
+| Library | `pathspec` 1.1.1 `GitIgnoreSpec`, queried with `check_file()`, whose result tells "excluded", "re-included by `!`" and "no match" apart. Directories are queried with a trailing slash | [M] (installed source) |
+
+**Deviations from rag_phase1.md**
+
+| Doc | This project | Why |
+|---|---|---|
+| Step 2 reads the root `.gitignore` only | Root and nested files, plus built-in patterns and the corpus rules file | Q8, Q4; the corpus has three nested `.gitignore` files [M] |
+| `PathSpec.from_lines("gitwildmatch", …)` | `GitIgnoreSpec`, evaluated directory level by directory level | `gitwildmatch` is deprecated since `pathspec` 1.0.0 (it emits `DeprecationWarning`); `GitIgnoreSpec` alone re-includes `build/keep.py` under `build/` + `!build/keep.py`, which Git 2.53 does not [M] |
+| `IGNORED_DIRS` matched by name at any depth | D2 | Avoid dropping a legitimate nested `build/` or `vendor/` |
+| Extension-only map, 15 entries | 18 extensions, 2 file names, lockfiles | Q3 |
+| `is_probably_binary` reads the whole file and returns True on `OSError` | Reads at most 1,024 bytes, never follows symlinks, does not block on FIFOs; "unreadable" is its own verdict | Bounded I/O; an I/O error says nothing about binary content |
+| Every `.md` file is indexed | `project_context/` excluded | Q1 |
+
+**7.3 Evaluation order.** Cheapest check first; the first filter that rejects a path gives its reason:
+
+1. built-in patterns → `builtin_pattern`
+2. corpus rules file → `corpus_rules`
+3. the corpus's `.gitignore` chain → `gitignore`
+4. lockfile name → `lockfile`
+5. secret-like name → `secret_name`
+6. language by file name, then by lowercased last extension → `unmapped_type`
+7. first-KiB probe → `binary`, `unreadable` or `not_regular_file`
+
+Filters 1–3 also apply to directories, so Step 4 can prune them before descending. They combine by union: a `!` line works inside the rules file and inside the `.gitignore` chain, never across sources.
+
+**7.4 Known limitations**
+- UTF-16 and UTF-32 text contains NUL bytes and is classified as binary.
+- A NUL byte after the first KiB is not detected. Step 4's strict UTF-8 decoding rejects most other binary content, but NUL is valid UTF-8.
+- Matching is case-sensitive, like Git with `core.ignorecase=false`. On case-insensitive filesystems the results may differ from Git's.
+- `.git/info/exclude`, the global `core.excludesFile` and `.gitattributes` are not read: they are not part of the repository, so reading them would make results depend on the machine.
+- `Dockerfile.dev` or a lowercase `makefile` get no language (exact names only).
+- `*secret*` and `*credentials*` also exclude legitimate files such as `secrets_manager.py`. The skip is visible in the reason counts.
+- `pathspec` 1.1.1 raises `re.error` on an invalid range such as `[z-a]` and `GitIgnorePatternError` on a lone `!` or `\`; Git ignores such lines. Both count as invalid lines (D3).
+
+**7.5 Result on the corpus (preview of Steps 1–3)** [M]. Run on 2026-11-25 at 15:41:49Z with the corpus at `5c288080…`. Before and after the run, HEAD was the same and `git status` was empty.
+
+| Language | Files | Bytes |
+|---|---|---|
+| markdown | 46 | 263,570 |
+| python | 32 | 192,670 |
+| yaml | 7 | 24,349 |
+| toml | 1 | 3,797 |
+| dockerfile | 1 | 4,964 |
+| makefile | 1 | 2,647 |
+| **Total** | **88** | **491,997** |
+
+| Finding | Value |
+|---|---|
+| By top-level directory | `docs/` 45 (238,798 B), `src/` 19 (121,650 B), root 8 (44,348 B), `tests/` 6 (47,488 B), `pipelines/` 4, `scripts/` 2, `.github/` 2, `docker/` 2 |
+| Discards (161 tracked files) | `corpus_rules` 51 (38 in `deploy/model/`, 13 in `project_context/`), `unmapped_type` 20, `lockfile` 2 (`uv.lock`, `dvc.lock`). `builtin_pattern`, `gitignore`, `secret_name`, `binary`, `unreadable` and `not_regular_file`: 0 |
+| Binaries | The six binaries are dropped earlier, by type or by the rules file, so the probe finds none |
+| Against the expected Step 4 result | Equal to the expected 88 files / 491,997 B (decision log). Step 4's deduplication and empty-file rule change nothing here: the eight known duplicates are all inside the excluded `deploy/model/`, the 88 files contain 0 duplicate groups (sha256, diagnostic only), and none is empty |
+| Corpus `.gitignore` files | All four were read (root, `.dvc/`, `data/raw/`, `data/monitoring/`) and they exclude none of the tracked files, which agrees with `git ls-files -c -i --exclude-per-directory=.gitignore` (0). This corpus therefore checks the rules and the maps; the `.gitignore` engine is checked by the tests (synthetic trees and the comparison with Git) |
+
+How it was produced:
+- **Input:** the universe was `git -C <corpus> ls-files -z` (161 paths).
+- **Script:**
+  - An ephemeral script, not versioned, kept in a new `mktemp -d` folder.
+  - It was run from this repository's root with `uv run --locked --offline python -I`, and imported only `src.config` and `src.ingestion`.
+  - It ran under `NetworkGuard`, with 0 violations. `unshare -rn` was blocked by the host's user-namespace policy.
+- **Per path:** `IgnorePolicy` (built-ins, `config/ingest.ignore`, the corpus's `.gitignore` files) → `classify_name` → `probe_head` (first KiB only). The first reason was recorded. The included files were also hashed, for the duplicate check only.
+- **Next:** Step 4's loader and CLI will replace the script.
+
 ## Appendix: Evidence and reproduction
 
 | # | Command | What it proves |
@@ -247,6 +346,7 @@ Ruff configuration: this repository keeps its own settings (line length 100, py3
 | C2 | `git -C <corpus> ls-files -z` and `git -C <corpus> ls-files -z -c -i --exclude-from=.gitignore` | The file universe, and the tracked files the root `.gitignore` matches |
 | C3 | `python3 -I characterize.py <corpus> tracked.z root_gitignored.z`, from a new `mktemp -d` folder | All Step 6 aggregates |
 | C4 | `git -C <corpus> ls-files -s -z`, grouped by blob ID | Byte-identical duplicates (8 `deploy/model` ↔ `src`) |
+| P1 | `git -C <corpus> ls-files -z`, then the Steps 1–3 preview script via `uv run --locked --offline python -I`, from a new `mktemp -d` folder | Section 7.5: 88 files / 491,997 B and the discard reasons |
 
 C3 is a stdlib-only script, not versioned in this repository, and imports no networking modules. It does not follow symlinks and handles paths as bytes. Per file it records:
 - a binary flag (NUL byte in the first KiB), lines as `count("\n") + 1`, and UTF-8 validity;
