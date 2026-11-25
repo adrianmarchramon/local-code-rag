@@ -4,6 +4,7 @@
 |---|---|---|
 | 2026-11-24 | 0: Setup and fundamentals (Steps 1–7) | Use case, model, privacy argument, corpus, stack. Phases 1+ are planned, not built. |
 | 2026-11-25 | 1: Ingestion (Steps 1–7) | Filters, loader, metadata, languages, tests and the key test (sections 7–9). Phases 2+ are planned, not built. |
+| 2026-11-25 | 2: Chunking (Steps 1–2) | Coherence invariants, parser registry and segmenter (section 10). Steps 3–7 and Phases 3+ are planned, not built. |
 
 ## 0. How to read this document
 
@@ -159,6 +160,9 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | NLTK data download attempted by `llama-index-core` on the first use of its stopwords; blocked by `NetworkGuard` before name resolution (see 8.1, venv permissions) | 2026-11-25 about 16:44Z | raw.githubusercontent.com (never reached) | Nothing | 1 / Steps 4–5, test probe | [M] |
 | `uv sync --locked --offline --reinstall` in copy mode | 2026-11-25 16:50:13Z | none | Nothing (from the uv cache) | 1 / Steps 4–5 | [M] |
 | Phase 1 Steps 6–7 and closure: no download, no installation, no documentation read | 2026-11-25 | none | Nothing | 1 / Steps 6–7 | [M] |
+| Public documentation reads (PyPI JSON for `tree-sitter-language-pack`, `tree-sitter`, `tree-sitter-python`; the language pack's README and docs; py-tree-sitter docs) | 2026-11-25 22:19:46Z–22:22:22Z | pypi.org, github.com, docs.tree-sitter-language-pack.xberg.io, tree-sitter.github.io | HTTP GETs; no repository data | 2 / preparation | [S] |
+| Public documentation re-read (PyPI JSON for `tree-sitter` and `tree-sitter-python`: releases, dates, sizes, hashes, yanked flags) | 2026-11-25 23:15:25Z | pypi.org | HTTP GETs; no repository data | 2 / Steps 1–2 | [S] |
+| `uv add "tree-sitter==0.26.1" "tree-sitter-python==0.25.0"` under `umask 022` (2 wheels, 782,192 B; hashes match PyPI) | 2026-11-25 23:18:10–23:18:11Z | pypi.org, files.pythonhosted.org | Package names and versions, uv's User-Agent | 2 / Steps 1–2 | [M] |
 
 **3.4 Controls matrix**
 
@@ -171,6 +175,7 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | Ollama client wrapper | Explicit host and finite timeout; no redirects; ignores proxy variables and `OLLAMA_HOST` | Other HTTP clients added in later phases | `tests/test_ollama_client.py` [M] |
 | Network guard | Blocks and records non-loopback connections and name lookups in the Python process, for every test (autouse) and for `make verify-local` | The Ollama server process, subprocesses, C extensions that bypass Python's `socket` | `make test`: 0 violations; `verify-local`: `blocked_attempts=0` [M] |
 | Static URL test | Non-loopback URLs in string literals under `src/` | URLs built at runtime; documentation | `tests/test_no_external_urls.py` [M] |
+| Guard-independent network check (`strace -f -e trace=network`, `bwrap --unshare-net`) | Native code, such as tree-sitter's C core, that the Python guard cannot see | Hosts without `strace` or `bwrap`; it is run by hand (Appendix S1), not by the suite | 0 network system calls; segmenting works with no network [M] (10.4) |
 | `.venv` without hardlinks or group write (`link-mode = "copy"`, `umask 022` in `make install`) | `llama-index-core` uses the NLTK and tiktoken data bundled in its wheel, so their first use needs no download | A `.venv` created another way (plain `uv sync` with a group-writable umask, other tools) | `tests/test_ingestion_privacy.py`: load, tokenizer, stopwords and punkt in a fresh interpreter, 0 violations, 0 files written [M] |
 | `models_present` check | Rejects models with no local weights (remote/cloud) | — | `tests/test_health_check.py` [M] |
 | Socket sampling | Ollama's TCP/UDP sockets to non-loopback peers | Connections shorter than the 1 s interval; lookups through the local resolver (127.0.0.53) | 579 samples, 0 non-loopback [H] |
@@ -232,6 +237,8 @@ TODO(user): Which questions should the assistant answer well on this corpus to c
 Ruff configuration: this repository keeps its own settings (line length 100, py311, rules `E W F I B UP SIM N RUF PT S BLE T20`). The MLOps repository uses line length 88, py312, rules `E F I N UP B D S`, and ignores `D401 N803 N806`. This repository keeps the stricter set on purpose, because `BLE` and `T20` enforce the no-broad-except and no-print guardrails [M], [U].
 
 Update after Phase 1 (2026-11-25): `llama-index-core` 0.14.26 and `pathspec` 1.1.1 are installed and used by ingestion only (7.2, 8.1); the rest of this table is unchanged.
+
+Update after Phase 2 Steps 1–2 (2026-11-25): chunking uses `tree-sitter` 0.26.1 and `tree-sitter-python` 0.25.0 through an own segmenter, not `CodeSplitter` (section 10).
 
 ## 6. Known gaps and open questions
 
@@ -611,6 +618,110 @@ Phase 1 is closed. Final results on the corpus are those of 8.7 and 9.6: 88 file
 | R12 | `/index` loads a path chosen by the API client; empty or missing roots raise typed errors; the endpoint loads twice | [D: rag_phase6.md Steps 3–4] | Allow-list paths; map `NoDocumentsError` and `RepositoryRootError` to 4xx |
 | R13 | Evaluation answers are not tied to a corpus version | [D: rag_phase7.md Step 3] | Record the corpus commit and the manifest with each RAGAS run |
 
+## 10. Phase 2 — Syntax-aware chunking (Steps 1–2)
+
+Step 1 explains why blind chunking destroys code; Step 2 asks for chunking along the code's structure with a parser per language [D: rag_phase2.md Steps 1–2]. Here Step 1 becomes executable invariants and Step 2 a segmenter that turns the text of a `.py` file into spans. No LlamaIndex node is built yet: `chunk_documents`, `symbol`, line numbers, IDs and the fallback splitters belong to Steps 3–6. Code: `src/ingestion/{spans,parser_registry,segmenter}.py`, `ChunkingRules` in `src/ingestion/chunker.py`; checkers in `tests/chunking_invariants.py`.
+
+**10.1 Decisions**
+
+| ID | Decision | Source |
+|---|---|---|
+| P1 | `tree-sitter` 0.26.1 and `tree-sitter-python` 0.25.0 only, hash-pinned in `uv.lock`; grammars compiled into the wheels, nothing downloaded at run time. No `tree-sitter-language-pack` (its 1.x line downloads parsers on first use, from native code) and no `llama-index` metapackage. `tree-sitter` is the newest release at least 14 days old (0.27.0 was 2 days old) | [U] 2026-11-25 |
+| P2 | Own segmenter on `tree_sitter.Parser`, not `CodeSplitter`: the whole file parsed once; one span per top-level definition; a class over the cap becomes a header, one span per method and class blocks; a definition over the cap is split at statement boundaries and marked forced; module code in contiguous blocks; cap 1500 characters; no overlap | [U] 2026-11-25 |
+| P3 | Own fallback splitters per file type (Step 5) | [U] 2026-11-25 |
+| P4 | Node metadata, `symbol`, line numbers and UUID5 IDs (Step 4) | [U] 2026-11-25 |
+| P5 | Python only, with a data-driven label → grammar registry; every other label has no parser | [U] 2026-11-25 |
+| P6 | Key test = invariants on the frozen corpus + a stats manifest + the owner's review (Step 7) | [U] 2026-11-25 |
+| G1-Q1 | Leading comments: comment-only runs before a definition join it, even across blank lines, when only comments separate it from the previous code; a shebang or encoding line never does | [U] 2026-11-25 |
+| G1-Q2 | Class over the cap: header = decorators, comments, `class` line, docstring and statements up to the first method; then one span per method; statements between or after methods form class blocks; nested classes recurse; a class without methods is a forced header split | [U] 2026-11-25 |
+| G1-Q3 | A statement or line over the cap on its own steps down: inner statements and clauses, then lines, then characters (breaking after a word), always forced | [U] 2026-11-25 |
+| G1-Q4 | Labels without a grammar and without a P3 splitter get a generic text splitter in Step 5: blank-line blocks merged up to the cap, then lines, then characters | [U] 2026-11-25 |
+| G1-policies | Boundaries, grouping, `forced`, comments and cap, name paths, 1500 characters, `Language` cached and one `Parser` per call (10.3) | [U] 2026-11-25 |
+| G2-Q1 | Syntax errors are a status, not an exception: top-level nodes without errors are segmented normally; a top-level node with errors is treated as module code, split at whole lines if needed, and counted. This makes the syntax-error branch of G1-Q4 unnecessary | [U] 2026-11-25 |
+| G2-Q2 | Definitions inside a module-level `if`/`try`/`with` are module code (0 in the corpus) | [U] 2026-11-25; [M] |
+
+**Deviations from rag_phase2.md (Steps 1–2)**
+
+| Doc | This project | Why |
+|---|---|---|
+| `uv add llama-index tree-sitter tree-sitter-language-pack` | `uv add "tree-sitter==0.26.1" "tree-sitter-python==0.25.0"` under `umask 022` | Q5, P1 |
+| `tree-sitter-language-pack`, "pre-built parsers, hassle-free" | Not used | 1.x fetches parsers on first use from GitHub Releases through its Rust core, invisible to `NetworkGuard`, into `~/.cache`; 0.9.1 is a 19.5 MB wheel pinned to `tree-sitter` 0.23.2 [public docs, 10.6] |
+| `CodeSplitter.from_defaults(chunk_lines=40, chunk_lines_overlap=15, max_chars=1500)` | Own segmenter; 1500 characters; no line target; no overlap | In the installed 0.14.26 `code.py`, `chunk_lines` and the overlap are never used; adjacent definitions are packed greedily into one chunk; chunks are stripped and located with `str.find` |
+| `get_parser(language)` per splitter, and per chunk in Step 4 | Registry: label → grammar module; `Language` cached per process; the whole file parsed once | No downloads; a label is not a grammar name; a fragment is not a valid module |
+| 8 syntax-aware languages | `python` only | P5 |
+| `max_chars` as a safeguard | The cap is an invariant (I6); what does not fit is split and marked forced | P2 |
+
+**10.2 Invariants (Step 1).** A coherent unit, as checkers that return violations (`tests/chunking_invariants.py`); each has a negative test proving it can fail. The oracle for I5 and I7 is the standard library's `ast` (line numbers only), not the tree that produced the spans; it does not apply to text that is not valid Python.
+
+| ID | Invariant |
+|---|---|
+| I1 | `0 <= start < end <= len(text)`; the span is the literal slice `text[start:end]` and does not end on whitespace |
+| I2 | Spans are sorted and do not overlap |
+| I3 | Every non-whitespace character belongs to exactly one span |
+| I4 | A span starts at the beginning of a line and ends at the end of its content, except forced pieces of a single line longer than the cap |
+| I5 | A function, method or class that fits within the cap is never split |
+| I6 | No span exceeds the cap |
+| I7 | A function or method split across spans has all those spans forced; a forced span always overlaps something that does not fit |
+| I8 | Two runs give identical results |
+
+Blind splitting violates them: `naive_line_split` every 4 lines (the doc's Step 1 example) cuts `validar_token` in two (I5), and a split every 120 characters also cuts it mid-line (I4); the segmenter keeps it in one span. The doc's `test_function_stays_whole` is vacuous: its assertions also pass for a "chunker" that returns the whole file (`tests/test_chunking.py`).
+
+**10.3 Span model and policies (Step 2)**
+- **Result:** `segment(text, spec, *, max_chars) -> Segmentation(spans, status, error_regions)`. `Span(start, end, kind, forced, name_path)` holds **character** offsets. The kind is one of `function`, `class`, `class_header`, `method`, `class_block`, `module_block`. The name path is `("f",)`, `("C",)` or `("C", "m")`, and empty for module code. The status is `clean` or `has_errors`. No line numbers or IDs: Step 4 derives them from the offsets without re-parsing.
+- **Boundaries:**
+  - A span starts at column 0 of its first non-blank line and ends after its last non-whitespace character; blank lines between spans belong to none.
+  - Rows come from the tree and are mapped to characters through a line-start index of the `str`, split on `\n` only. Byte offsets are never used to index the `str`, and `str.find` is never used to locate text.
+  - An end-of-line comment stays with its line.
+- **Grouping:**
+  - Every top-level definition that fits is its own span, even when tiny (definitions are never merged).
+  - Module code is the complement of the definitions, so coverage holds by construction.
+- **Over the cap:**
+  - Whole units are packed greedily.
+  - A header (decorators, `def`/`class`/`if`… line) keeps its first part.
+  - What still does not fit steps down to statements and clauses, then lines, then characters.
+  - `forced` marks the split of a function, method, class header, statement or line. It lives on the span, never in node metadata (P4: no extra keys).
+- **Comments:** leading comments that would push a fitting definition over the cap get their own span; the definition is not split.
+- **Parsers:**
+  - `GrammarSpec` holds node types and field names as data; every declared type is checked against the installed grammar.
+  - A label without an entry returns no parser as a value; a registered grammar that cannot load raises `ParserUnavailableError` (run `make install`).
+  - Importing the registry loads no grammar; `Language` is cached per process; each call gets a new `Parser`.
+- **Errors:** `ChunkingError`, `InvalidChunkingRulesError` and `ParserUnavailableError` under `IngestionError` (`src/errors.py`). A file with syntax errors is a result with a status, not an exception.
+
+**10.4 Spike results** [M], 2026-11-25, on synthetic snippets only.
+
+| Topic | Result |
+|---|---|
+| API and ABI | `Language(tree_sitter_python.language())`, ABI 15 = `tree_sitter.LANGUAGE_VERSION` (minimum 13); `Parser(language).parse(bytes)`; `has_error`, `is_error`, `is_missing`; both packages ship `py.typed` and `.pyi` stubs, so strict mypy needs no override |
+| Positions | Byte offsets and byte columns; rows split on `\n` only (`\x0c` and ` ` do not start a row); the root ends at column 0 of the next row |
+| Tree shape | `decorated_definition` = decorators (a comment between them included) + definition; `async def` is a `function_definition`; methods and nested classes sit in the class `block`; clauses are `elif_clause`, `else_clause`, `except_clause`, `finally_clause`, `case_clause` (no `except_group_clause` type in this grammar); `a = 1; b = 2` gives two siblings on one row |
+| Comments | An end-of-line comment is a sibling on its row; a comment indented at the end of a block stays inside the definition; a column-0 comment after a block is module-level, but between two methods it stays inside the class |
+| Errors | A broken definition keeps its type and span (`has_error`) and its neighbours stay clean; an unclosed parenthesis yields a top-level `ERROR` node that can swallow the rest of the file; a stray indent is not flagged although Python rejects it |
+| Privacy | Fresh interpreter under `NetworkGuard`: 0 violations; `strace -f -e trace=network`: 0 network system calls (a positive control with one socket is detected); `bwrap --unshare-net`: works without a network; `HOME`, `XDG_CACHE_HOME` and `TMPDIR` in an empty directory stayed empty; nothing under `~/.cache` |
+
+**10.5 Result on the corpus** [M], 2026-11-25 at 23:38Z, under `NetworkGuard` (0 violations); the corpus at `5c288080…` with the same HEAD and an empty `git status` before and after.
+
+| Finding | Value |
+|---|---|
+| Input | 32 `.py` documents, 192,670 B, from the loader |
+| Spans | 279: `function` 179, `module_block` 71, `class` 22, `method` 6, `class_header` 1 |
+| Forced spans | 77: `function` 64, `method` 5, `module_block` 8 |
+| Span size (characters) | p50 515, p90 1,454, max 1,498 |
+| Syntax errors | 0 files |
+| Invariant violations (I1–I8) | 0 |
+| Time | 14.1 ms for the 32 files (grammar already loaded) |
+| Step 1 evidence | Of 188 definitions (`ast`, any depth), 33 exceed the cap. The segmenter splits exactly those 33. A blind split every 40 lines also splits 39 definitions that fit; one every 1,500 characters splits 46 |
+
+**10.6 Known limitations and open questions**
+
+| Item | Effect or question |
+|---|---|
+| tree-sitter is lenient | A stray indent parses cleanly; an `ERROR` node can swallow the code that follows it, which is then segmented as module code |
+| Recursion | Stepping down follows statement nesting; extremely deep nesting could reach Python's recursion limit |
+| `Parser` per call | Chosen because sharing a parser across threads is not documented as safe [H] |
+| Input precondition | Text normalized by the loader (`\n` only, no BOM, no NUL); a lone `\r` is not a line break for the line index |
+| Open: Step 5 | The generic text splitter for labels without a grammar (G1-Q4) is decided but not built |
+| Open: Step 4 | Confirm that P4 keeps `file_path`, `language` and `symbol` visible to the embedder and the LLM and hides every other key |
+
 ## Appendix: Evidence and reproduction
 
 | # | Command | What it proves |
@@ -631,6 +742,8 @@ Phase 1 is closed. Final results on the corpus are those of 8.7 and 9.6: 88 file
 | P2 | `make ingest INGEST_FLAGS="--repo ~/repos/project-to-index"` (also with `--list` and `--json`) | Section 8.7: 88 files / 491,997 B, discard reasons and pruned directories |
 | P3 | Only after an owner decision that changes the expected files. First check that `git -C <corpus> rev-parse HEAD` is the frozen SHA and `GIT_OPTIONAL_LOCKS=0 git -C <corpus> status --porcelain` is empty. Then run `uv run --locked --offline python -m tests.corpus_manifest --out tests/fixtures/corpus_manifest.tsv` from this repository's root. Validate independently: the paths against `git -C <corpus> ls-files -z`, every row against `sha256sum` and `stat`, and the set against a second traversal (the Steps 1–3 helper `_filter_tree`) | The manifest of section 9.6 |
 | P4 | `make test-corpus` (`pytest -m integration -rs tests/test_ingestion_corpus_integration.py`) | The key test (9.6). `make test-integration` also runs it, together with the two Phase 0 tests that need Ollama |
+| S1 | From a new `mktemp -d` folder, with `HOME`, `XDG_CACHE_HOME` and `TMPDIR` set to an empty directory: a script that imports `src.ingestion.segmenter`, loads the grammar and segments a synthetic text, run with `strace -f -qq -e trace=network -o <log> .venv/bin/python -I -B <script> <repo>` and with `bwrap --ro-bind / / --dev /dev --proc /proc --bind <dir> <dir> --unshare-net .venv/bin/python -I -B <script> <repo>` | Section 10.4: no network system calls, works with no network, writes nothing |
+| S2 | From a new `mktemp -d` folder: a script that loads the corpus with the loader, segments the `python` documents and runs `tests/chunking_invariants.py`, under `NetworkGuard`, via `PYTHONPATH=<repo>:<repo>/tests uv run --locked --offline python <script> <corpus>` | Section 10.5 |
 
 C3 is a stdlib-only script, not versioned in this repository, and imports no networking modules. It does not follow symlinks and handles paths as bytes. Per file it records:
 - a binary flag (NUL byte in the first KiB), lines as `count("\n") + 1`, and UTF-8 validity;
