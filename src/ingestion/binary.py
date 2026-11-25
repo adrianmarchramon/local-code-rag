@@ -43,28 +43,55 @@ class ProbeVerdict(StrEnum):
         return None if self is ProbeVerdict.TEXT else DiscardReason(self.value)
 
 
+def open_regular_file(path: Path) -> int | ProbeVerdict:
+    """Open a regular file read-only, never following a symlink and never blocking.
+
+    Returns the file descriptor (the caller closes it), or the verdict that explains why
+    the file was not opened: ``not_regular_file`` (symlink, FIFO, socket, device,
+    directory) or ``unreadable`` (missing, permission denied, swapped for a symlink after
+    ``lstat``). Shared by the probe and Step 4's content reader.
+    """
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return ProbeVerdict.NOT_REGULAR_FILE  # never opened
+        fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC)
+    except OSError:
+        return ProbeVerdict.UNREADABLE
+    try:
+        regular = stat.S_ISREG(os.fstat(fd).st_mode)
+    except OSError:
+        os.close(fd)
+        return ProbeVerdict.UNREADABLE
+    if not regular:
+        os.close(fd)
+        return ProbeVerdict.NOT_REGULAR_FILE
+    return fd
+
+
+def read_at_most(fd: int, limit: int) -> bytes:
+    """Read up to ``limit`` bytes, completing short reads; raises OSError on I/O errors."""
+    chunks: list[bytes] = []
+    remaining = limit
+    while remaining > 0:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def probe_head(path: Path, head_bytes: int) -> ProbeVerdict:
     """Classify ``path`` by reading at most ``head_bytes`` bytes from its start."""
     if type(head_bytes) is not int or head_bytes <= 0:
         raise ValueError(f"head_bytes must be a positive integer, got {head_bytes!r}.")
+    opened = open_regular_file(path)
+    if isinstance(opened, ProbeVerdict):
+        return opened
     try:
-        if not stat.S_ISREG(os.lstat(path).st_mode):
-            return ProbeVerdict.NOT_REGULAR_FILE  # symlink, FIFO, socket, device, directory
-        fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC)
-    except OSError:
-        # Missing, permission denied, or swapped for a symlink after lstat (ELOOP).
-        return ProbeVerdict.UNREADABLE
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return ProbeVerdict.NOT_REGULAR_FILE
-        head = b""
-        while len(head) < head_bytes:
-            chunk = os.read(fd, head_bytes - len(head))
-            if not chunk:
-                break
-            head += chunk
+        head = read_at_most(opened, head_bytes)
     except OSError:
         return ProbeVerdict.UNREADABLE
     finally:
-        os.close(fd)
+        os.close(opened)
     return ProbeVerdict.BINARY if b"\0" in head else ProbeVerdict.TEXT
