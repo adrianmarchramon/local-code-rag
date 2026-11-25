@@ -31,6 +31,13 @@ IMPORTS_UNDER_GUARD: tuple[str, ...] = (
     "src.ingestion.dedup",
     "src.ingestion.report",
     "src.ingestion.loader",
+    # Phase 2 Steps 1-2 (appended): tree-sitter, the grammar and the segmenter stack.
+    "tree_sitter",
+    "tree_sitter_python",
+    "src.ingestion.spans",
+    "src.ingestion.chunker",
+    "src.ingestion.parser_registry",
+    "src.ingestion.segmenter",
 )
 
 _CHILD = textwrap.dedent(
@@ -184,3 +191,64 @@ def test_full_load_and_bundled_caches_need_no_network_and_write_nothing(
     assert report["stopwords"] > 0
     assert report["sentences"] == 2
     assert report["files_written_outside_repo"] == []
+
+
+# --- Phase 2 Steps 1-2: loading the grammar, parsing and segmenting need no network ------
+
+_SEGMENT_CHILD = textwrap.dedent(
+    """
+    import json, sys
+    from pathlib import Path
+
+    repo_root, work = sys.argv[1], Path(sys.argv[2])
+    sys.path.insert(0, repo_root)
+    from src.network_guard import NetworkGuard
+
+    with NetworkGuard() as guard:
+        from src.ingestion.chunker import ChunkingRules
+        from src.ingestion.parser_registry import grammar_for, load_language
+        from src.ingestion.segmenter import segment
+
+        spec = grammar_for("python")
+        abi = load_language(spec).abi_version  # first use of the grammar
+        text = "@d\\nclass C:\\n    def m(self):\\n        return 'caf\\u00e9'\\n"
+        result = segment(text, spec, max_chars=ChunkingRules().max_chunk_chars)
+    print(json.dumps({
+        "violations": [repr(v) for v in guard.violations],
+        "abi": abi,
+        "kinds": [s.kind.value for s in result.spans],
+        "files_written": sorted(p.relative_to(work).as_posix() for p in work.rglob("*")),
+    }))
+    """
+)
+
+
+def test_grammar_load_parse_and_segment_need_no_network_and_write_nothing(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(work),
+        "XDG_CACHE_HOME": str(work),
+        "TMPDIR": str(work),
+        "LC_ALL": "C.UTF-8",
+    }
+
+    result = subprocess.run(  # noqa: S603 (this interpreter, a constant script)
+        [sys.executable, "-I", "-B", "-c", _SEGMENT_CHILD, str(REPO_ROOT), str(work)],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["violations"] == []
+    assert report["abi"] == 15
+    assert report["kinds"] == ["class"]
+    assert report["files_written"] == []
