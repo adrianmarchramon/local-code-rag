@@ -70,3 +70,19 @@ class NoDocumentsError(IngestionError):
     Raised by ``load_repository`` so that an empty index is never built silently; the
     function that also returns the load report returns the empty result instead.
     """
+
+
+class ChunkingError(IngestionError):
+    """Chunking cannot proceed, or produced a span that breaks its own contract (a bug)."""
+
+
+class InvalidChunkingRulesError(ChunkingError):
+    """A chunking parameter is invalid, such as a non-positive size cap."""
+
+
+class ParserUnavailableError(ChunkingError):
+    """A grammar registered for a language could not be loaded.
+
+    Grammars ship compiled inside their wheels (decision P1) and are never downloaded, so
+    this means the virtual environment does not match ``uv.lock``: run ``make install``.
+    """
