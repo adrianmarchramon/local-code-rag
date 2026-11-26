@@ -1,0 +1,712 @@
+{
+  "format": "local-code-rag/chunk-manifest/1",
+  "corpus": {
+    "url": "https://github.com/adrianmarchramon/fraud-mlops-pipeline.git",
+    "commit": "5c288080c88f0bfec435af0093a5155baaf7f343"
+  },
+  "regenerate": "uv run --locked --offline python -m tests.chunk_manifest --out tests/fixtures/chunk_manifest.json",
+  "rules": {
+    "max_chunk_chars": 1500
+  },
+  "versions": {
+    "tree-sitter": "0.26.1",
+    "tree-sitter-python": "0.25.0",
+    "llama-index-core": "0.14.26"
+  },
+  "digest": {
+    "definition": "document = sha256 of the lines '<node id>:<node hash>' of its nodes in order, joined by \\n (UTF-8); corpus = sha256 of the lines '<path>:<document digest>' in document order, joined by \\n",
+    "corpus": "0ddc4d1ae608b2e92a3e6840a2d5fdd6d6fd0b3e9961b4c4d284c82f982444cd"
+  },
+  "report": {
+    "documents": 88,
+    "nodes": 658,
+    "by_language": {
+      "dockerfile": {
+        "documents": 1,
+        "nodes": 4
+      },
+      "makefile": {
+        "documents": 1,
+        "nodes": 2
+      },
+      "markdown": {
+        "documents": 46,
+        "nodes": 340
+      },
+      "python": {
+        "documents": 32,
+        "nodes": 279
+      },
+      "toml": {
+        "documents": 1,
+        "nodes": 4
+      },
+      "yaml": {
+        "documents": 7,
+        "nodes": 29
+      }
+    },
+    "by_strategy": {
+      "config": {
+        "documents": 10,
+        "nodes": 39
+      },
+      "markdown": {
+        "documents": 46,
+        "nodes": 340
+      },
+      "syntactic": {
+        "documents": 32,
+        "nodes": 279
+      }
+    },
+    "by_kind": {
+      "class": 22,
+      "class_header": 1,
+      "config_block": 39,
+      "function": 179,
+      "method": 6,
+      "module_block": 71,
+      "section": 340
+    },
+    "forced": 176,
+    "forced_by_kind": {
+      "config_block": 22,
+      "function": 64,
+      "method": 5,
+      "module_block": 8,
+      "section": 77
+    },
+    "fallback_reasons": {
+      "no_parser": 56
+    },
+    "syntax_error_files": [],
+    "syntax_error_regions": 0,
+    "degraded_files": [],
+    "empty_documents": [],
+    "size_chars": {
+      "p50": 683,
+      "p90": 1439,
+      "max": 1500
+    },
+    "max_embed_chars": 1683
+  },
+  "documents": [
+    {
+      "path": ".github/workflows/cd.yml",
+      "strategy": "config",
+      "nodes": 6,
+      "forced": 4,
+      "digest": "e6709b42acdfaddf6c42f36ecd088e88cb306c4536e079e516219a03f9442b97"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "strategy": "config",
+      "nodes": 4,
+      "forced": 3,
+      "digest": "8f30f4a04f2cdcefec84d6d82d79e28c91440f5e8b849f77c703b32a39d2f42b"
+    },
+    {
+      "path": ".pre-commit-config.yaml",
+      "strategy": "config",
+      "nodes": 3,
+      "forced": 3,
+      "digest": "7560524021e4301dc8b6da8fca394b30022dfc800f2d65a27192c9b52b9aed39"
+    },
+    {
+      "path": "Makefile",
+      "strategy": "config",
+      "nodes": 2,
+      "forced": 0,
+      "digest": "0a4651b4601d4c04b2cc1eff3139af328bd4180a2306b00ca5fa478508603f26"
+    },
+    {
+      "path": "README.md",
+      "strategy": "markdown",
+      "nodes": 25,
+      "forced": 12,
+      "digest": "2b4a693f34f853dc404c53a9c0888f6ab1ffa8e9ec7b2cfa9b0648ca02b368f8"
+    },
+    {
+      "path": "docker/Dockerfile",
+      "strategy": "config",
+      "nodes": 4,
+      "forced": 0,
+      "digest": "cfa9cf2c6f5e501ac269da20a81274eaceb66e1e1e8d2726e3d42ead026a81b0"
+    },
+    {
+      "path": "docker/docker-compose.yml",
+      "strategy": "config",
+      "nodes": 4,
+      "forced": 3,
+      "digest": "f587ff0629491dbe96789f193f8435bf919ba6487fe26dc90305e60d46d142ce"
+    },
+    {
+      "path": "docs/decisions/0001-business-metric.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "1ec4f74326f64c1f5e5de1ab3c58d8b187893f06772bc600ff139829cf44327d"
+    },
+    {
+      "path": "docs/decisions/0002-cost-asymmetry.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "46c9bc6307cb4cce1b756bd2f44180995612347af0cfbcc022c7f1390fd0b0fc"
+    },
+    {
+      "path": "docs/decisions/0003-dataset-choice.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "bbcf4f658d6a1d363d357cea443c9fe5eb73253b1d7168ea94d8ddbf732137e1"
+    },
+    {
+      "path": "docs/decisions/0004-stack-summary.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "4c6383207b9b330f0eb728880eedb0ea0954a87c6dbaa1aa7a4505518dddfb01"
+    },
+    {
+      "path": "docs/decisions/0005-dvc-local-remote.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "0bb45a7cfe1b37aeee4a16049ed5d4b3414aae692a62548ea4b2362badc964e2"
+    },
+    {
+      "path": "docs/decisions/0006-no-data-leakage.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "f0939beaf4512bef4eb332c279317c0c8e9beecbc0833e94f86b248970e49066"
+    },
+    {
+      "path": "docs/decisions/0007-scale-time-amount-only.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "b8b075ec63318647ad2e2fb5770f6ad9e2196daf872bb08f1039e988a0f79131"
+    },
+    {
+      "path": "docs/decisions/0008-preprocessor-persistence.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "ac8b2952ebaaf002036da7745a4f6888d4039ce03cf06f78068366b69ac4f5ac"
+    },
+    {
+      "path": "docs/decisions/0009-stratified-split.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "0b4bcc2ff262e0b226efe763df8c08a2c37333706d066e60af74bcc795c2b6b7"
+    },
+    {
+      "path": "docs/decisions/0010-pandera-strict-lazy.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "4b13492815cb41218d57fe03c4906bac03df4f0179f1a63c9bee6c12181cbf55"
+    },
+    {
+      "path": "docs/decisions/0011-mlflow-sqlite-backend.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "47bf24ffeeff0a6ef8fe42fdf9f5b48c1c7464945c0a6092224897f875fe2163"
+    },
+    {
+      "path": "docs/decisions/0012-imbalance-strategy.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "1b97b6340a6354171330beb5e3a6469569b0342651bba79f17ab07dfe3fe2fde"
+    },
+    {
+      "path": "docs/decisions/0013-winning-model-xgboost.md",
+      "strategy": "markdown",
+      "nodes": 7,
+      "forced": 2,
+      "digest": "764c68056e8e70196dbe920be5898ff4ba13aefd009361e9aa193d0d122106e6"
+    },
+    {
+      "path": "docs/decisions/0014-cost-optimal-threshold.md",
+      "strategy": "markdown",
+      "nodes": 7,
+      "forced": 2,
+      "digest": "0e2ebf54992adc8d606ab1099ae327e0a642a2274ae203d014dd346aedf61dca"
+    },
+    {
+      "path": "docs/decisions/0015-packaged-model-contract.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "291d814fbd5df7473d489309936c4330ed4906b4db25e425ce052ab3cad84969"
+    },
+    {
+      "path": "docs/decisions/0016-promotion-quality-gate.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "99a21d0df0700eedea163da41eec83ab8124f12ea291b543f03f06fb144c5de7"
+    },
+    {
+      "path": "docs/decisions/0017-registry-testing-and-visibility.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "2af51274918f00fa51b01fd7e771a1862d2494341685f1a49e82991a3e80c396"
+    },
+    {
+      "path": "docs/decisions/0018-registry-snapshot-phase-3.md",
+      "strategy": "markdown",
+      "nodes": 5,
+      "forced": 0,
+      "digest": "eec4a7d8752271c0a86281ab7678d23d67db562b59c6fd9de2d2ef1a8ab69861"
+    },
+    {
+      "path": "docs/decisions/0019-api-response-contract.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "3a4a386fbecca1fc64416c63401ed91ee0b902d052608ddc2776085738fdf78c"
+    },
+    {
+      "path": "docs/decisions/0020-api-structure-and-state.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "51e15f16fc2710567b3bed70382752701a7b33fb2e93cdc8304b2960eb608ca3"
+    },
+    {
+      "path": "docs/decisions/0021-prediction-log-and-api-tests.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "10e28491b3c95bce780aaf28fc5a6245f8cf76f74d7aecc7c0bccb8738e4e900"
+    },
+    {
+      "path": "docs/decisions/0022-container-image-contract.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "a806fe17f5be71e643e0f26f6bce266d5999da485aaeed797342472fdc7f1530"
+    },
+    {
+      "path": "docs/decisions/0023-compose-topology.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "09ee9880fd4985932a4e1fca6274c9c8ded6f8ea02bc4514f083c8635f7ca1a9"
+    },
+    {
+      "path": "docs/decisions/0024-environment-based-tracking-uri.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "81d8be5006497fdf9a528a7d2992a9b10c44ed3b42c91ad69b77c557c6b14bf1"
+    },
+    {
+      "path": "docs/decisions/0025-phase-5-reproducibility-and-key-test-scope.md",
+      "strategy": "markdown",
+      "nodes": 8,
+      "forced": 4,
+      "digest": "3120810b4c7db02f15b8fa5cbffb3c0ecbdd0aabde8f13a01fcd7f2dc9bde042"
+    },
+    {
+      "path": "docs/decisions/0026-ci-workflow-shape.md",
+      "strategy": "markdown",
+      "nodes": 7,
+      "forced": 2,
+      "digest": "b998f07b20f9ab2ab2d2302848df8d60b92e593fcdbca05c29d0e8a7cfbcb6a5"
+    },
+    {
+      "path": "docs/decisions/0027-branch-protection-boundary.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "098e21af5eb7bc39a29c00028671901a6db33bf99f0b8cca37f7e90f41d54030"
+    },
+    {
+      "path": "docs/decisions/0028-model-quality-gate-threshold.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "0ed60e9e350cb7801cd293a9c82e1e1474468b0e43c8cc54d9520a81d4327e64"
+    },
+    {
+      "path": "docs/decisions/0029-cd-workflow-and-ghcr-publication.md",
+      "strategy": "markdown",
+      "nodes": 8,
+      "forced": 4,
+      "digest": "e797b029416846bfaa2940d66c5b4c7c3259abb587a7795b2c05980a6c6da141"
+    },
+    {
+      "path": "docs/decisions/0030-phase-6-verification-and-dod-deviations.md",
+      "strategy": "markdown",
+      "nodes": 7,
+      "forced": 0,
+      "digest": "b8c57990925e2b07ec28a2593affa4b48eb0c6bec3d67f54d107ed06c031b65a"
+    },
+    {
+      "path": "docs/decisions/0031-prefect-dependency-group.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "35ae1fd2d3e87bcc65858fd5cec63aba8c583947bc8b0e228e651a4505f42b5f"
+    },
+    {
+      "path": "docs/decisions/0032-strict-typing-in-pipelines.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "8b47e62e6ee7c5debf6946fc5a04a4b3b42e2350744c7c274d7bf60692b26067"
+    },
+    {
+      "path": "docs/decisions/0033-orchestration-design.md",
+      "strategy": "markdown",
+      "nodes": 8,
+      "forced": 4,
+      "digest": "6716555ab60c7d7f9b84762649d0987ee2ceba4be679827fb9bc9d3709955f94"
+    },
+    {
+      "path": "docs/decisions/0034-testing-prefect-flows.md",
+      "strategy": "markdown",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "6ff9306932f2e8468bdfe5663b68f13924ca5ddb537176fe030c9d8ba242bfb8"
+    },
+    {
+      "path": "docs/decisions/0035-phase-7-live-verification.md",
+      "strategy": "markdown",
+      "nodes": 11,
+      "forced": 5,
+      "digest": "f7d3d1042352c20eb920fbd48b9b334889a3d99b7312d08ac6a70305cfbaffa5"
+    },
+    {
+      "path": "docs/decisions/0036-phase-7-closure.md",
+      "strategy": "markdown",
+      "nodes": 9,
+      "forced": 0,
+      "digest": "e5cbd0afe08b817ecfee2d12dcf5f60e65d7a6f2fc37a5e47a6b4cc6ba6e1c66"
+    },
+    {
+      "path": "docs/decisions/0037-reference-dataset.md",
+      "strategy": "markdown",
+      "nodes": 9,
+      "forced": 6,
+      "digest": "89c43890637533ad099c692e979f0d4da7b1e337b9f6fcb950cd1febf58bc5c0"
+    },
+    {
+      "path": "docs/decisions/0038-evidently-dependency-and-api.md",
+      "strategy": "markdown",
+      "nodes": 8,
+      "forced": 3,
+      "digest": "0eba4717330e48105040dca6856a0bd223eeb3ad4affe2571728f9261add64cf"
+    },
+    {
+      "path": "docs/decisions/0039-alerting-and-report-placement.md",
+      "strategy": "markdown",
+      "nodes": 9,
+      "forced": 6,
+      "digest": "47b89d4612e2a75ae1cd5a7b8cf40460712fcaaaa79fc07b5406f5a7cc1ab1b8"
+    },
+    {
+      "path": "docs/decisions/0040-closed-loop-demonstration.md",
+      "strategy": "markdown",
+      "nodes": 9,
+      "forced": 5,
+      "digest": "4ef926e7bcaee2f27bec06ec89c726717865d50c6f77feee167fe6f08b26f134"
+    },
+    {
+      "path": "docs/decisions/0041-phase-8-closure.md",
+      "strategy": "markdown",
+      "nodes": 10,
+      "forced": 2,
+      "digest": "8acf66f6bd1f0fb337824a086fb29bb67b0894a46f93e1b10b60916b9862ae3d"
+    },
+    {
+      "path": "docs/decisions/0042-bundled-model.md",
+      "strategy": "markdown",
+      "nodes": 10,
+      "forced": 7,
+      "digest": "176336ea83ad479feec572efed3c9a16d7f947058bf0ac0ea3f8e7f2f58487f4"
+    },
+    {
+      "path": "docs/decisions/0043-render-deployment.md",
+      "strategy": "markdown",
+      "nodes": 9,
+      "forced": 5,
+      "digest": "ae1fb871df7abc2296dbbcd6408ab0d33ab7e4e764cd258853c5b77f8c78de6b"
+    },
+    {
+      "path": "docs/decisions/0044-phase-9-closure.md",
+      "strategy": "markdown",
+      "nodes": 10,
+      "forced": 0,
+      "digest": "924ce0710a08178049f286e8bd1c6f17c622f8bdf1c7c4213b094723d7d974e7"
+    },
+    {
+      "path": "docs/decisions/README.md",
+      "strategy": "markdown",
+      "nodes": 8,
+      "forced": 8,
+      "digest": "4197d808339fb711d75c70666eb7ac083f05e7b092f009b936172fa727029358"
+    },
+    {
+      "path": "dvc.yaml",
+      "strategy": "config",
+      "nodes": 3,
+      "forced": 3,
+      "digest": "32716f23244298e9110c204b4a5dfa50dd847dc1d6f4492298da41bb9db7afff"
+    },
+    {
+      "path": "main.py",
+      "strategy": "syntactic",
+      "nodes": 3,
+      "forced": 0,
+      "digest": "5aef7689d7b1235e184e4214989d8acc5856bfe1976612d63161bd2fed49362e"
+    },
+    {
+      "path": "params.yaml",
+      "strategy": "config",
+      "nodes": 5,
+      "forced": 2,
+      "digest": "1703e97e4fafc84fe56c88a8056b9366e231a65b7e2aa8ce36d364914bc146b8"
+    },
+    {
+      "path": "pipelines/__init__.py",
+      "strategy": "syntactic",
+      "nodes": 1,
+      "forced": 0,
+      "digest": "0afe4a549a46db7c62baab34598b58084b69c9941ab7405ccaa4b6aba26e6677"
+    },
+    {
+      "path": "pipelines/monitoring_pipeline.py",
+      "strategy": "syntactic",
+      "nodes": 5,
+      "forced": 0,
+      "digest": "924eecefc4473bb4ab67ddb1a8b8151d089eb74caa65198bef73fa21052a261e"
+    },
+    {
+      "path": "pipelines/serve.py",
+      "strategy": "syntactic",
+      "nodes": 3,
+      "forced": 0,
+      "digest": "f84580efeac10347b8a9ba87126839fd31c431c86b1801d5890a31aecc3e24d5"
+    },
+    {
+      "path": "pipelines/training_pipeline.py",
+      "strategy": "syntactic",
+      "nodes": 8,
+      "forced": 0,
+      "digest": "b2a56efee2470f9e5401d5cb7f6f8f1b6472c054d572ba1cfae546c1aa8f791f"
+    },
+    {
+      "path": "pyproject.toml",
+      "strategy": "config",
+      "nodes": 4,
+      "forced": 0,
+      "digest": "35bd96cbf87c3861f0017c342fb91e39562271e9deb12f49c3ec3166402dfe79"
+    },
+    {
+      "path": "render.yaml",
+      "strategy": "config",
+      "nodes": 4,
+      "forced": 4,
+      "digest": "c6324e968dca77401981a7e9972978c4f4e30549eb3f55864e6adf2997d696cd"
+    },
+    {
+      "path": "scripts/export_model.py",
+      "strategy": "syntactic",
+      "nodes": 8,
+      "forced": 4,
+      "digest": "e8418c70d838f4591e5465349bf870393d7a292a06ba25eee17f9f63e59d7328"
+    },
+    {
+      "path": "scripts/simulate_drift.py",
+      "strategy": "syntactic",
+      "nodes": 7,
+      "forced": 2,
+      "digest": "716e887205b3c9b4acfd794ee24749f392ecd31621501de0176fdf79afc46abd"
+    },
+    {
+      "path": "src/__init__.py",
+      "strategy": "syntactic",
+      "nodes": 1,
+      "forced": 0,
+      "digest": "28a5623e26e749ba3939c6b08917458c8d07568ec13873358796e59ecde6ecd8"
+    },
+    {
+      "path": "src/api/__init__.py",
+      "strategy": "syntactic",
+      "nodes": 1,
+      "forced": 0,
+      "digest": "0c0527a234615e39a57951158504e1a12c7c38d2a98760d305e45b3500d70872"
+    },
+    {
+      "path": "src/api/main.py",
+      "strategy": "syntactic",
+      "nodes": 9,
+      "forced": 2,
+      "digest": "2b26aec4988d6cdadf07cbb2c3502f1a1edd531b953cb58a5207f5838dff2483"
+    },
+    {
+      "path": "src/api/predict.py",
+      "strategy": "syntactic",
+      "nodes": 11,
+      "forced": 7,
+      "digest": "40e72e9f205fbb5d28327bf6c18bfc2c57956e98cdde253cc4b4626b34b59f98"
+    },
+    {
+      "path": "src/api/schemas.py",
+      "strategy": "syntactic",
+      "nodes": 3,
+      "forced": 0,
+      "digest": "2486c3b08136c0330a580f7992e58b92f241458d6b8db0216dc1305d20ac8f5a"
+    },
+    {
+      "path": "src/config.py",
+      "strategy": "syntactic",
+      "nodes": 6,
+      "forced": 0,
+      "digest": "682a1bf9d2962245d6a559a45078671661a9948c6dcbf61ba3b44fab5e28f449"
+    },
+    {
+      "path": "src/data/__init__.py",
+      "strategy": "syntactic",
+      "nodes": 1,
+      "forced": 0,
+      "digest": "8f03c7c67b30982554f4a786614a36ea95881c46046e4f5d9bea1c27d0d16c28"
+    },
+    {
+      "path": "src/data/ingest.py",
+      "strategy": "syntactic",
+      "nodes": 2,
+      "forced": 0,
+      "digest": "43f6d85156f0ff68d705a24c54e340efdb10f726ab047a7faa3b278d2fe5fdec"
+    },
+    {
+      "path": "src/data/preprocess.py",
+      "strategy": "syntactic",
+      "nodes": 7,
+      "forced": 2,
+      "digest": "ad0e9dfb237889f9c8a31b13207b7464e96e764e6419b2a49ad48e89759ea3cd"
+    },
+    {
+      "path": "src/data/validate.py",
+      "strategy": "syntactic",
+      "nodes": 7,
+      "forced": 2,
+      "digest": "eb1f99899ef891ea479587ae149b662ebccd1540c67dc044a41bb38272ac5f61"
+    },
+    {
+      "path": "src/exceptions.py",
+      "strategy": "syntactic",
+      "nodes": 10,
+      "forced": 0,
+      "digest": "22e48e7fee212b315ee2b36975adbdf6b0f990a28a065767dcd29aeaef400167"
+    },
+    {
+      "path": "src/models/__init__.py",
+      "strategy": "syntactic",
+      "nodes": 1,
+      "forced": 0,
+      "digest": "75a9eee4637bcb3853aed4a09cca72dcebbe829caadf0ecce9151a3f123389d6"
+    },
+    {
+      "path": "src/models/evaluate.py",
+      "strategy": "syntactic",
+      "nodes": 7,
+      "forced": 6,
+      "digest": "067ced20fd70705b77d54c23ef576d86a41ae3a97f6086815171e9216e19c9a0"
+    },
+    {
+      "path": "src/models/register.py",
+      "strategy": "syntactic",
+      "nodes": 33,
+      "forced": 23,
+      "digest": "17223c70d0b5c566ae9190db40d6d7fae1051ee3dabfbf0222c14568398a7dbf"
+    },
+    {
+      "path": "src/models/train.py",
+      "strategy": "syntactic",
+      "nodes": 20,
+      "forced": 13,
+      "digest": "0449d745a2e6f49cd486a9b87507a428e8d4e349ce1c211940a13775895aec19"
+    },
+    {
+      "path": "src/monitoring/__init__.py",
+      "strategy": "syntactic",
+      "nodes": 1,
+      "forced": 0,
+      "digest": "5fce3fb14a93164b47017f31f7dadc16c596241196868fdefbbdbf467fd094cc"
+    },
+    {
+      "path": "src/monitoring/dashboard.py",
+      "strategy": "syntactic",
+      "nodes": 1,
+      "forced": 0,
+      "digest": "4e1ce3edd8565761c46570d5d892e63718f71b5627b6fa7ff59ac75bfaad07ed"
+    },
+    {
+      "path": "src/monitoring/drift.py",
+      "strategy": "syntactic",
+      "nodes": 15,
+      "forced": 12,
+      "digest": "60c2903cce3b0e1e89c44063a976a1083864222929b8a245ba235968f2efa268"
+    },
+    {
+      "path": "src/monitoring/reference.py",
+      "strategy": "syntactic",
+      "nodes": 8,
+      "forced": 2,
+      "digest": "8f652c090f0e9a083904b49d1b84e54946bde947c755d883900b3a45790bf816"
+    },
+    {
+      "path": "tests/test_api.py",
+      "strategy": "syntactic",
+      "nodes": 26,
+      "forced": 0,
+      "digest": "73583a4fdd6185db888f91105d4d8c785b7b0b1456c732999b1b13bc06082da3"
+    },
+    {
+      "path": "tests/test_data.py",
+      "strategy": "syntactic",
+      "nodes": 8,
+      "forced": 0,
+      "digest": "a6e047fc3bc543a287ce4aa57dcadb46f72e12b0ec09156dcd1e82887dc59fbb"
+    },
+    {
+      "path": "tests/test_model.py",
+      "strategy": "syntactic",
+      "nodes": 35,
+      "forced": 0,
+      "digest": "7d5b75921f82f62310912503e34fb14afcf573daaba4cd1e909959771c3dedf5"
+    },
+    {
+      "path": "tests/test_model_quality.py",
+      "strategy": "syntactic",
+      "nodes": 3,
+      "forced": 0,
+      "digest": "7f88180b3204ad692e10ffe8c3326c346b36b178442bf3bf176d08b8906d5318"
+    },
+    {
+      "path": "tests/test_monitoring.py",
+      "strategy": "syntactic",
+      "nodes": 15,
+      "forced": 2,
+      "digest": "b29597283c48731c3b0864740a3581bc5b6321d4267d5cbb886ba8d723562e70"
+    },
+    {
+      "path": "tests/test_pipelines.py",
+      "strategy": "syntactic",
+      "nodes": 13,
+      "forced": 0,
+      "digest": "2092ab7e88c8475ae6ca8ad52f6f7c99d60abda5250c7a1bee558a2ffc8eb4a7"
+    }
+  ]
+}

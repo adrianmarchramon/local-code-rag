@@ -8,6 +8,7 @@ Synthetic texts only. Every segmentation case is checked against all invariants 
 import ast
 import builtins
 import dataclasses
+import hashlib
 import io
 import json
 import logging
@@ -18,10 +19,19 @@ import sys
 import textwrap
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
+from chunk_manifest import (
+    ChunkManifestError,
+    build_manifest,
+    compare_manifests,
+    document_digest,
+    format_manifest,
+    parse_manifest,
+)
+from chunk_validation import ReviewPick, review_sample, split_definitions, tree_snapshot, validate
 from chunking_invariants import (
     Violation,
     check_all,
@@ -44,7 +54,7 @@ from chunking_invariants import (
     naive_line_split,
 )
 from llama_index.core import Document
-from llama_index.core.schema import MetadataMode, NodeRelationship, TextNode
+from llama_index.core.schema import BaseNode, MetadataMode, NodeRelationship, TextNode
 from llama_index.core.vector_stores.utils import metadata_dict_to_node, node_to_metadata_dict
 
 from src.errors import (
@@ -58,6 +68,7 @@ from src.ingestion.chunk_report import NodeTally, percentile
 from src.ingestion.chunker import (
     DEFAULT_MAX_CHUNK_CHARS,
     ChunkingRules,
+    ChunkResult,
     chunk_documents,
     chunk_documents_with_report,
 )
@@ -88,6 +99,8 @@ from src.ingestion.strategies import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CAP = DEFAULT_MAX_CHUNK_CHARS
+# Corpus digest of the synthetic repository below at cap 120 (test_the_synthetic_digest_is_stable).
+GOLDEN_SYNTHETIC_DIGEST = "2878752d66cd75d29a5a8cf1cc02156e52c171af3da03079489f320b4363bb0f"
 
 Shape = tuple[str, str, bool]  # (kind, dotted name path, forced)
 
@@ -1700,3 +1713,429 @@ def test_comments_between_config_blocks_belong_to_the_next_block_for_the_oracle_
         "RUN one",
         "# about the next one\n# second line\nRUN two",
     ]
+
+
+# --- Step 7 (DoD #4): the doc's three tests, adapted and non-vacuous ---------------------------
+
+STEP7_FUNCTIONS = (
+    "import functools\n\n\n@functools.cache\ndef decorated(x):\n    return x * 2\n\n\n"
+    "async def fetch(client):\n    return await client.get()\n\n\n"
+    "def neighbour_over_the_cap():\n    total = 0\n"
+    + "".join(f"    total += {i}  # step {i}\n" for i in range(12))
+    + "    return total\n\n\ndef tail():\n    return 1\n"
+)
+STEP7_CAP = 200
+
+Piece = tuple[int, int, str | None, bool]  # (start, end, symbol, forced)
+
+
+def _function_problems(text: str, pieces: Sequence[Piece], cap: int) -> list[str]:
+    """Why ``pieces`` break "a function stays whole"; [] when every fitting function is
+    exactly one piece with its complete source and no piece mixes two functions."""
+    regions = [r for r in definition_regions(text) or [] if r.is_function]
+    problems = []
+    for region in regions:
+        touching = [p for p in pieces if p[0] < region.end and region.start < p[1]]
+        if region.size <= cap:
+            exact = [p for p in touching if (p[0], p[1]) == (region.start, region.end)]
+            if len(exact) != 1 or len(touching) != 1:
+                problems.append(f"{region.name}: not exactly one piece with its whole source")
+            elif exact[0][2] != region.name:
+                problems.append(f"{region.name}: wrong symbol {exact[0][2]!r}")
+        elif len(touching) < 2 or not all(p[3] and p[2] == region.name for p in touching):
+            problems.append(f"{region.name}: split without forced pieces named after it")
+    for start, end, _, _ in pieces:
+        if sum(1 for r in regions if start < r.end and r.start < end) > 1:
+            problems.append(f"piece [{start}, {end}) mixes two functions")
+    return problems
+
+
+def _node_pieces(nodes: Sequence[BaseNode], spans: Sequence[Span]) -> list[Piece]:
+    return [
+        (s.start, s.end, n.metadata.get("symbol"), s.forced)
+        for n, s in zip(nodes, spans, strict=True)
+    ]
+
+
+def test_each_function_is_one_node_with_its_whole_source() -> None:
+    result = chunk_documents_with_report(
+        [_document(STEP7_FUNCTIONS, "src/step7.py")], rules=ChunkingRules(STEP7_CAP)
+    )
+    by_symbol: dict[str, list[str]] = {}
+    for node in result.nodes:
+        by_symbol.setdefault(str(node.metadata.get("symbol")), []).append(node.text)
+
+    assert (
+        _function_problems(STEP7_FUNCTIONS, _node_pieces(result.nodes, result.spans), STEP7_CAP)
+        == []
+    )
+    assert by_symbol["decorated"] == ["@functools.cache\ndef decorated(x):\n    return x * 2"]
+    assert by_symbol["fetch"] == ["async def fetch(client):\n    return await client.get()"]
+    assert by_symbol["tail"] == ["def tail():\n    return 1"]
+    assert len(by_symbol["neighbour_over_the_cap"]) > 1  # the one that does not fit
+
+
+def test_the_function_assertions_fail_for_a_whole_file_and_a_blind_chunker() -> None:
+    whole_file = [(0, len(STEP7_FUNCTIONS.rstrip()), None, False)]
+    blind = [(s.start, s.end, None, False) for s in naive_line_split(STEP7_FUNCTIONS, 4)]
+
+    assert _function_problems(STEP7_FUNCTIONS, whole_file, STEP7_CAP) != []
+    assert _function_problems(STEP7_FUNCTIONS, blind, STEP7_CAP) != []
+
+
+def _symbols_of(documents: list[Document], cap: int = CAP) -> list[str | None]:
+    nodes = chunk_documents(documents, rules=ChunkingRules(cap))
+    return [n.metadata.get("symbol") for n in nodes]
+
+
+def test_symbols_on_nodes_for_every_kind_of_unit() -> None:
+    assert _symbols_of([_document(TWO_FUNCTIONS, "a.py")]) == ["alpha", "beta"]
+    assert _symbols_of([_document(CLASS_FITS, "a.py")]) == ["Point"]  # a whole class
+    assert "Service.start" in _symbols_of([_document(BIG_CLASS, "a.py")], 120)
+    assert _symbols_of([_document(NESTED_CLASS, "a.py")], 130)[-1] == "Outer.Large.inner_method"
+    assert _symbols_of([_document(MD_MIXED, "README.md", "markdown")], 200) == [
+        None,  # the preamble has no heading
+        "Title > Usage",
+        "Title > Setext heading",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "language", "text"),
+    [("a.py", "python", MODULE_CODE), ("ci.yml", "yaml", YAML_CI), ("a.go", "go", TEXT_JS)],
+)
+def test_nodes_without_a_name_have_no_symbol_key(path: str, language: str, text: str) -> None:
+    nodes = chunk_documents([_document(text, path, language)], rules=ChunkingRules(200))
+    unnamed = [n for n in nodes if "symbol" not in n.metadata]
+
+    assert unnamed  # module code, configuration blocks and generic text
+    assert all(None not in n.metadata.values() for n in nodes)
+
+
+def test_metadata_is_inherited_exactly_and_enriched_with_exact_lines() -> None:
+    document = _document(STEP7_FUNCTIONS, "src/step7.py")
+
+    nodes = chunk_documents([document], rules=ChunkingRules(STEP7_CAP))
+    fetch = next(n for n in nodes if n.metadata.get("symbol") == "fetch")
+
+    assert list(fetch.metadata.items()) == [
+        ("file_path", "src/step7.py"),
+        ("language", "python"),
+        ("size_bytes", len(STEP7_FUNCTIONS.encode("utf-8"))),
+        ("num_lines", STEP7_FUNCTIONS.count("\n")),
+        ("content_hash", "0" * 64),
+        ("directory", "src"),
+        ("symbol", "fetch"),
+        ("start_line", 9),
+        ("end_line", 10),
+    ]
+    assert STEP7_FUNCTIONS.split("\n")[8] == "async def fetch(client):"  # line 9, 1-based
+    assert STEP7_FUNCTIONS.split("\n")[9] == "    return await client.get()"
+
+
+# --- Step 7 (P6): manifest and content-free validation, tested without the corpus ------------
+
+
+def _synthetic_run() -> tuple[list[Document], ChunkResult]:
+    documents = _repo_documents()
+    return documents, chunk_documents_with_report(documents, rules=ChunkingRules(120))
+
+
+def _synthetic_manifest() -> dict[str, object]:
+    _, result = _synthetic_run()
+    return build_manifest("a" * 40, "https://example.invalid/repo.git", result, ChunkingRules(120))
+
+
+def test_the_document_digest_follows_its_written_definition() -> None:
+    _, result = _synthetic_run()
+    nodes = [n for n in result.nodes if n.metadata["file_path"] == "src/a.py"]
+    lines = "\n".join(f"{n.node_id}:{n.hash}" for n in nodes)
+
+    assert document_digest(nodes) == hashlib.sha256(lines.encode("utf-8")).hexdigest()
+
+
+def test_the_synthetic_digest_is_stable() -> None:
+    # Golden value: chunking, IDs or hashes changing would change it.
+    digest = _synthetic_manifest()["digest"]
+
+    assert isinstance(digest, dict)
+    assert digest["corpus"] == GOLDEN_SYNTHETIC_DIGEST
+
+
+def test_the_manifest_round_trips_through_its_canonical_text() -> None:
+    manifest = _synthetic_manifest()
+    text = format_manifest(manifest)
+
+    assert parse_manifest(text.encode("utf-8")) == manifest
+    assert text.endswith("}\n")
+    assert "\r" not in text
+
+
+def _broken(change: Callable[[dict[str, object]], object]) -> bytes:
+    manifest = json.loads(format_manifest(_synthetic_manifest()))
+    change(manifest)
+    return (json.dumps(manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _row(manifest: dict[str, object]) -> dict[str, object]:
+    rows = manifest["documents"]
+    assert isinstance(rows, list)
+    row = rows[0]
+    assert isinstance(row, dict)
+    return row
+
+
+@pytest.mark.parametrize(
+    ("data", "match"),
+    [
+        (b"\xef\xbb\xbf{}\n", "without BOM"),
+        (b"{}\r\n", "LF line endings"),
+        (b"{}", "ending with a newline"),
+        (b"{not json\n", "not valid UTF-8 JSON"),
+        (b"{}\n", "top-level keys"),
+        (_broken(lambda m: m.update(format="other/1")), "unknown format"),
+        (_broken(lambda m: _row(m).update(nodes=-1)), "invalid counts"),
+        (_broken(lambda m: _row(m).update(strategy="magic")), "invalid path or strategy"),
+        (_broken(lambda m: _row(m).update(digest="xyz")), "invalid digest"),
+        (_broken(lambda m: _row(m).pop("forced")), "exactly the keys"),
+        (_broken(lambda m: m.update(documents=[])), "non-empty list"),
+        (_broken(lambda m: _row(m).update(digest="0" * 64)), "corpus digest does not match"),
+    ],
+    ids=[
+        "bom",
+        "crlf",
+        "no_newline",
+        "json",
+        "keys",
+        "format",
+        "counts",
+        "strategy",
+        "digest",
+        "row_keys",
+        "empty",
+        "corpus_digest",
+    ],
+)
+def test_the_manifest_reader_is_strict_and_actionable(data: bytes, match: str) -> None:
+    with pytest.raises(ChunkManifestError, match=match) as raised:
+        parse_manifest(data)
+
+    assert "Regenerate it with" in str(raised.value)
+
+
+def test_a_non_canonical_manifest_is_rejected() -> None:
+    compact = json.dumps(_synthetic_manifest()) + "\n"
+
+    with pytest.raises(ChunkManifestError, match="canonical form"):
+        parse_manifest(compact.encode("utf-8"))
+
+
+def test_manifest_comparison_names_every_difference_without_content() -> None:
+    expected = _synthetic_manifest()
+    actual = json.loads(format_manifest(expected))
+    rows = actual["documents"]
+    moved = rows.pop(0)
+    rows.append({**moved, "path": "new/file.py"})
+    rows[0]["forced"] += 1
+    actual["versions"]["tree-sitter"] = "9.9.9"
+    actual["report"]["nodes"] += 1
+
+    problems = compare_manifests(expected, actual)
+
+    assert "missing from the run: src/a.py" in problems
+    assert "not in the manifest: new/file.py" in problems
+    assert any(p.startswith("README.md: forced differs") for p in problems)
+    assert any(p.startswith("versions differs") for p in problems)
+    assert any(p.startswith("report.nodes differs") for p in problems)
+    assert compare_manifests(expected, expected) == []
+
+
+def test_manifest_comparison_detects_a_reordering() -> None:
+    expected = _synthetic_manifest()
+    actual = json.loads(format_manifest(expected))
+    actual["documents"].reverse()
+
+    assert compare_manifests(expected, actual) == ["document order differs"]
+
+
+def test_the_validator_accepts_a_correct_run_and_counts_split_definitions() -> None:
+    documents, result = _synthetic_run()
+
+    assert validate(documents, result, 120) == []
+    counts = split_definitions(documents, result, 120)
+    assert counts.split_that_fit == 0
+    assert counts.split == counts.over_cap
+
+
+def _tampered(change: Callable[[TextNode], None]) -> list[str]:
+    documents, result = _synthetic_run()
+    node = result.nodes[0]
+    change(node)
+    return sorted({f.code for f in validate(documents, result, 120)})
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        (lambda n: setattr(n, "text", n.text + " "), "slice"),
+        (lambda n: setattr(n, "start_char_idx", 1), "offsets"),
+        (lambda n: n.metadata.update(start_line=99), "lines"),
+        (lambda n: setattr(n, "metadata", dict(reversed(list(n.metadata.items())))), "keys"),
+        (lambda n: n.metadata.update(size_bytes="12"), "type:size_bytes"),
+        (lambda n: n.metadata.update(language="go"), "inherited"),
+        (lambda n: n.excluded_embed_metadata_keys.remove("start_line"), "visible"),
+        (lambda n: setattr(n, "id_", "not-the-uuid5"), "id"),
+        (lambda n: n.relationships.clear(), "relationship"),
+    ],
+    ids=["text", "offsets", "lines", "key_order", "type", "inherited", "visible", "id", "rel"],
+)
+def test_the_validator_detects_each_kind_of_tampering(
+    change: Callable[[TextNode], None], code: str
+) -> None:
+    assert code in _tampered(change)
+
+
+def test_the_validator_detects_duplicates_and_degraded_files() -> None:
+    documents, result = _synthetic_run()
+    duplicated = dataclasses.replace(
+        result,
+        nodes=(*result.nodes, result.nodes[0].model_copy(deep=True)),
+        spans=(*result.spans, result.spans[0]),
+    )
+    degraded = dataclasses.replace(
+        result, report=dataclasses.replace(result.report, degraded_files=("src/a.py",))
+    )
+
+    assert {"duplicate_id", "duplicate_hash", "order"} <= {
+        f.code for f in validate(documents, duplicated, 120)
+    }
+    assert {f.code for f in validate(documents, degraded, 120)} == {"degraded"}
+
+
+def test_findings_never_carry_text_or_symbols() -> None:
+    documents, result = _synthetic_run()
+    result.nodes[0].text += " SENTINEL_TEXT_7f1"
+
+    findings = validate(documents, result, 120)
+
+    assert findings
+    assert "SENTINEL" not in repr(findings)
+    assert "alpha" not in repr(findings)  # the symbol of the tampered node
+
+
+def test_the_review_sample_is_deterministic_and_has_no_duplicates() -> None:
+    documents = [
+        _document(HUGE_FUNCTION, "src/big.py"),
+        _document(BIG_CLASS, "src/service.py"),
+        _document(MODULE_CODE, "src/main.py"),
+        _document(MD_BIG_SECTION, "docs/big.md", "markdown"),
+        _document(MD_FENCES, "docs/fences.md", "markdown"),
+        _document(MD_MIXED, "README.md", "markdown"),
+        _document(DOCKERFILE, "Dockerfile", "dockerfile"),
+        _document(MAKEFILE, "Makefile", "makefile"),
+        _document(TOML_STRING, "pyproject.toml", "toml"),
+        _document(YAML_CI, "ci.yml", "yaml"),
+    ]
+    result = chunk_documents_with_report(documents, rules=ChunkingRules(120))
+
+    picks = review_sample(documents, result)
+
+    assert picks == review_sample(documents, result)
+    assert len({p.path for p in picks}) == len(picks)
+    assert {p.path for p in picks} == {d.doc_id for d in documents}
+    assert any(p.path == "README.md" for p in picks)  # chosen once, by its first criterion
+    assert ReviewPick("src/service.py", "split class (class_header)") in picks
+
+
+def test_the_tree_snapshot_sees_a_change(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("one\n", encoding="utf-8")
+    before = tree_snapshot(tmp_path)
+    (tmp_path / "b.txt").write_text("two\n", encoding="utf-8")
+
+    assert tree_snapshot(tmp_path) != before
+
+
+_SENTINEL_TEST = textwrap.dedent(
+    """
+    import json
+    from pathlib import Path
+
+    from chunk_validation import validate
+    from llama_index.core import Document
+    from src.ingestion.chunker import ChunkingRules, chunk_documents_with_report
+
+    def test_failure_is_content_free():
+        data = json.loads((Path(__file__).parent / "doc.json").read_text())
+        document = Document(id_=data["path"], text=data["text"], metadata=data["metadata"])
+        result = chunk_documents_with_report([document], rules=ChunkingRules(1500))
+        result.nodes[0].text += data["text"]
+        findings = validate([document], result, 1500)
+        assert findings == []
+    """
+)
+
+
+def test_a_failing_validation_prints_no_content(tmp_path: Path) -> None:
+    sentinel = "SENTINEL_CONTENT_c41f"
+    text = f"def {sentinel}_function():\n    return '{sentinel}'\n"
+    document = _document(text, "src/s.py")
+    (tmp_path / "doc.json").write_text(
+        json.dumps({"path": "src/s.py", "text": text, "metadata": dict(document.metadata)}),
+        encoding="utf-8",
+    )
+    (tmp_path / "test_sentinel.py").write_text(_SENTINEL_TEST, encoding="utf-8")
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "PYTHONPATH": f"{REPO_ROOT}{os.pathsep}{REPO_ROOT / 'tests'}",
+    }
+
+    result = subprocess.run(  # this interpreter, a constant test file
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "test_sentinel.py"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert result.returncode == 1  # the forced failure happened
+    assert "Finding(code=" in result.stdout  # the records are shown...
+    assert sentinel not in result.stdout + result.stderr  # ...but never the content
+
+
+# --- Step 7: defect found by the second-codebase smoke test (approved fix) ---------------------
+
+BANNER_THEN_BIG_FUNCTION = (
+    "# section banner "
+    + "-" * 40
+    + "\n\n\n@parametrize(\n"
+    + "".join(f"    ({i}, {i}),\n" for i in range(12))
+    + ")\ndef f(a, b):\n    return a + b\n"
+)
+BANNER_THEN_BIG_CLASS = (  # a banner that fits alone, not together with the class line
+    "# section banner "
+    + "-" * 120
+    + "\n\n\nclass Config:\n"
+    + "".join(f"    option_{i}: int = {i}\n" for i in range(12))
+    + "\n    def method(self):\n        return 1\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "kind"),
+    [(BANNER_THEN_BIG_FUNCTION, "function"), (BANNER_THEN_BIG_CLASS, "class_header")],
+    ids=["function", "class_header"],
+)
+def test_leading_comments_that_cannot_join_a_split_definition_get_their_own_span(
+    text: str, kind: str
+) -> None:
+    cap = 150
+    spans = _segment(text, cap).spans
+
+    assert _violations(text, cap) == []
+    assert (spans[0].kind.value, spans[0].forced, spans[0].name_path) == ("module_block", False, ())
+    assert text[spans[0].start : spans[0].end].startswith("# section banner")
+    assert spans[1].kind.value == kind
+    assert text[spans[1].start : spans[1].end].startswith(("@parametrize(", "class Config:"))
