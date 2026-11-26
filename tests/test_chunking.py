@@ -8,12 +8,16 @@ Synthetic texts only. Every segmentation case is checked against all invariants 
 import ast
 import builtins
 import dataclasses
+import io
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import textwrap
+import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -27,20 +31,60 @@ from chunking_invariants import (
     check_definitions_whole,
     check_deterministic,
     check_forced,
+    check_forced_where_needed,
     check_line_boundaries,
     check_order,
+    check_shared,
+    check_units_whole,
+    config_top_regions,
     definition_regions,
+    fence_regions,
+    markdown_section_regions,
     naive_char_split,
     naive_line_split,
 )
+from llama_index.core import Document
+from llama_index.core.schema import MetadataMode, NodeRelationship, TextNode
+from llama_index.core.vector_stores.utils import metadata_dict_to_node, node_to_metadata_dict
 
-from src.errors import ChunkingError, InvalidChunkingRulesError, ParserUnavailableError
-from src.ingestion import parser_registry, segmenter
-from src.ingestion.chunker import DEFAULT_MAX_CHUNK_CHARS, ChunkingRules
-from src.ingestion.parser_registry import PYTHON, GrammarSpec, grammar_for, load_language
+from src.errors import (
+    ChunkingError,
+    InvalidChunkingRulesError,
+    InvalidDocumentError,
+    ParserUnavailableError,
+)
+from src.ingestion import chunker, parser_registry, segmenter
+from src.ingestion.chunk_report import NodeTally, percentile
+from src.ingestion.chunker import (
+    DEFAULT_MAX_CHUNK_CHARS,
+    ChunkingRules,
+    chunk_documents,
+    chunk_documents_with_report,
+)
+from src.ingestion.documents import HIDDEN_METADATA_KEYS
+from src.ingestion.loader import ExitCode, load_repository_with_report
+from src.ingestion.nodes import (
+    HIDDEN_NODE_KEYS,
+    NODE_ID_NAMESPACE,
+    build_nodes,
+    node_id,
+    render_symbol,
+)
+from src.ingestion.parser_registry import GRAMMARS, PYTHON, GrammarSpec, grammar_for, load_language
 from src.ingestion.rules import IngestionRules
 from src.ingestion.segmenter import segment
 from src.ingestion.spans import ParseStatus, Segmentation, Span, SpanKind
+from src.ingestion.strategies import (
+    LABEL_STRATEGIES,
+    SYMBOL_STYLES,
+    FallbackReason,
+    Strategy,
+    SymbolStyle,
+    SyntacticSegmenter,
+    fallback_reason,
+    segmenter_for,
+    strategy_for,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CAP = DEFAULT_MAX_CHUNK_CHARS
@@ -770,3 +814,889 @@ def test_logs_counts_never_content(caplog: pytest.LogCaptureFixture) -> None:
     assert record.__dict__["spans"] == 2
     assert record.__dict__["status"] == "clean"
     assert "validar_token" not in json.dumps({k: str(v) for k, v in record.__dict__.items()})
+
+
+# --- Step 3: language dispatch ------------------------------------------------------------------
+
+
+def test_every_loader_label_has_an_explicit_strategy() -> None:
+    # A new loader label fails here until its strategy is decided (data in strategies.py).
+    assert IngestionRules().languages == set(GRAMMARS) | set(LABEL_STRATEGIES)
+    assert not set(GRAMMARS) & set(LABEL_STRATEGIES)  # the grammar data is not duplicated
+
+
+def test_the_strategy_map_is_the_agreed_one() -> None:
+    assert {label: strategy_for(label).value for label in sorted(IngestionRules().languages)} == {
+        "c": "text",
+        "cpp": "text",
+        "csharp": "text",
+        "dockerfile": "config",
+        "go": "text",
+        "java": "text",
+        "javascript": "text",
+        "makefile": "config",
+        "markdown": "markdown",
+        "php": "text",
+        "python": "syntactic",
+        "ruby": "text",
+        "rust": "text",
+        "toml": "config",
+        "typescript": "text",
+        "yaml": "config",
+    }
+
+
+def test_an_unknown_label_gets_generic_text() -> None:
+    assert strategy_for("cobol") is Strategy.TEXT
+
+
+def test_every_non_syntactic_strategy_carries_no_parser() -> None:
+    assert {s: fallback_reason(s) for s in Strategy} == {
+        Strategy.SYNTACTIC: None,
+        Strategy.MARKDOWN: FallbackReason.NO_PARSER,
+        Strategy.CONFIG: FallbackReason.NO_PARSER,
+        Strategy.TEXT: FallbackReason.NO_PARSER,
+    }
+
+
+def test_the_syntactic_segmenter_adapts_segment_without_changing_it() -> None:
+    adapted = SyntacticSegmenter(PYTHON)
+
+    assert adapted(BIG_CLASS, max_chars=120) == segment(BIG_CLASS, PYTHON, max_chars=120)
+
+
+def test_every_strategy_has_a_symbol_style() -> None:
+    assert set(SYMBOL_STYLES) == set(Strategy)
+    assert SYMBOL_STYLES[Strategy.SYNTACTIC].separator == "."
+    assert SYMBOL_STYLES[Strategy.MARKDOWN].max_chars == 120
+
+
+# --- Step 4: from spans to nodes ----------------------------------------------------------------
+
+DOCUMENT_KEYS = ["file_path", "language", "size_bytes", "num_lines", "content_hash", "directory"]
+
+
+def _document(text: str, path: str = "src/app.py", language: str = "python") -> Document:
+    return Document(
+        id_=path,
+        text=text,
+        metadata={
+            "file_path": path,
+            "language": language,
+            "size_bytes": len(text.encode("utf-8")),
+            "num_lines": text.count("\n") + (0 if text.endswith("\n") else 1),
+            "content_hash": "0" * 64,
+            "directory": path.rpartition("/")[0],
+        },
+        excluded_embed_metadata_keys=list(HIDDEN_METADATA_KEYS),
+        excluded_llm_metadata_keys=list(HIDDEN_METADATA_KEYS),
+    )
+
+
+def _nodes(text: str, cap: int = CAP, path: str = "src/app.py") -> tuple[TextNode, ...]:
+    document = _document(text, path)
+    return build_nodes(document, _segment(text, cap), SYMBOL_STYLES[Strategy.SYNTACTIC])
+
+
+def _symbols(text: str, cap: int = CAP) -> list[str | None]:
+    return [n.metadata.get("symbol") for n in _nodes(text, cap)]
+
+
+def test_node_ids_are_uuid5_of_the_fixed_namespace() -> None:
+    # Golden value: a refactor must not silently change node IDs.
+    assert node_id("src/app.py", 0, 21) == "7f3e8e16-5ecf-57b4-b2ce-77cdfffd50a4"
+    assert uuid.UUID("41a05dbb-07dd-4b83-840e-8c25648f281a") == NODE_ID_NAMESPACE
+
+
+def test_node_metadata_keys_types_and_order() -> None:
+    function, module = _nodes("def f():\n    return 1\n\n\nx = 1\n")
+
+    assert list(function.metadata) == [*DOCUMENT_KEYS, "symbol", "start_line", "end_line"]
+    assert list(module.metadata) == [*DOCUMENT_KEYS, "start_line", "end_line"]  # no symbol
+    assert {k: type(v).__name__ for k, v in function.metadata.items()} == {
+        "file_path": "str",
+        "language": "str",
+        "size_bytes": "int",
+        "num_lines": "int",
+        "content_hash": "str",
+        "directory": "str",
+        "symbol": "str",
+        "start_line": "int",
+        "end_line": "int",
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "cap", "expected"),
+    [
+        (TWO_FUNCTIONS, CAP, ["alpha", "beta"]),
+        (BIG_CLASS, 120, ["Service", "Service.start", "Service", "Service.stop", "Service"]),
+        (
+            NESTED_CLASS,
+            130,
+            ["Outer", "Outer.first", "Outer.Small", "Outer.Large", "Outer.Large.inner_method"],
+        ),
+        (HUGE_FUNCTION, 160, ["process"] * len(_segment(HUGE_FUNCTION, 160).spans)),
+        (MODULE_CODE, CAP, [None, "main", None]),
+        (SYNTAX_ERRORS["unclosed_paren"], CAP, ["ok", None]),
+    ],
+    ids=["functions", "class_header_and_blocks", "nested", "forced_fragments", "module", "error"],
+)
+def test_symbol_comes_from_the_name_path(text: str, cap: int, expected: list[str | None]) -> None:
+    assert _symbols(text, cap) == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "limit", "expected"),
+    [
+        ((), 120, None),
+        (("Title", "Decision"), 120, "Title > Decision"),
+        (("A" * 50, "B" * 50, "C" * 50), 120, "… > " + "B" * 50 + " > " + "C" * 50),
+        (("A" * 50, "X" * 200), 120, "…" + "X" * 119),
+    ],
+)
+def test_bounded_symbols_keep_the_most_specific_end(
+    path: tuple[str, ...], limit: int, expected: str | None
+) -> None:
+    symbol = render_symbol(path, SymbolStyle(" > ", max_chars=limit))
+
+    assert symbol == expected
+    assert symbol is None or len(symbol) <= limit
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_node_text_offsets_and_lines_match_an_independent_oracle(case: str) -> None:
+    text, cap = CASES[case]
+
+    for node, span in zip(_nodes(text, cap), _segment(text, cap).spans, strict=True):
+        assert node.text == text[span.start : span.end]
+        assert (node.start_char_idx, node.end_char_idx) == (span.start, span.end)
+        assert node.metadata["start_line"] == text[: span.start].count("\n") + 1
+        assert node.metadata["end_line"] == text[: span.end - 1].count("\n") + 1
+
+
+def test_first_and_last_lines_without_trailing_newline_and_repeated_functions() -> None:
+    assert [(n.metadata["start_line"], n.metadata["end_line"]) for n in _nodes(REPEATED)] == [
+        (1, 2),
+        (5, 6),
+    ]
+    (last,) = _nodes(NO_TRAILING_NEWLINE)
+    assert (last.metadata["start_line"], last.metadata["end_line"]) == (1, 2)
+    assert last.end_char_idx == len(NO_TRAILING_NEWLINE)
+    (accents,) = _nodes(NON_ASCII)
+    assert (accents.metadata["start_line"], accents.metadata["end_line"]) == (1, 3)
+
+
+def test_views_show_only_file_path_language_and_symbol() -> None:
+    (node,) = _nodes("def f():\n    return 1\n")
+    head = "file_path: src/app.py\nlanguage: python\nsymbol: f\n\n"
+
+    assert node.get_content(metadata_mode=MetadataMode.EMBED) == head + node.text
+    assert node.get_content(metadata_mode=MetadataMode.LLM) == head + node.text
+    assert node.get_content(metadata_mode=MetadataMode.NONE) == node.text
+    assert node.excluded_embed_metadata_keys == list(HIDDEN_NODE_KEYS)
+    assert node.excluded_embed_metadata_keys is not node.excluded_llm_metadata_keys
+
+
+def test_only_the_source_relationship_points_to_the_document() -> None:
+    first, second = _nodes(TWO_FUNCTIONS)
+
+    assert set(first.relationships) == {NodeRelationship.SOURCE}
+    assert first.ref_doc_id == second.ref_doc_id == "src/app.py"
+    assert first.metadata is not second.metadata
+    assert first.excluded_embed_metadata_keys is not second.excluded_embed_metadata_keys
+
+
+def test_vector_store_round_trip_keeps_hash_id_offsets_and_key_order() -> None:
+    for node in _nodes(BIG_CLASS, 120):
+        stored = node_to_metadata_dict(node, remove_text=True, flat_metadata=True)
+        back = metadata_dict_to_node(stored, text=node.text)
+
+        assert (back.node_id, back.hash) == (node.node_id, node.hash)
+        assert list(back.metadata) == list(node.metadata)
+        assert isinstance(back, TextNode)
+        assert (back.start_char_idx, back.end_char_idx) == (node.start_char_idx, node.end_char_idx)
+        assert {"_node_content", "_node_type", "document_id", "doc_id", "ref_doc_id"} <= set(stored)
+
+
+def test_flat_metadata_check_rejects_lists_but_accepts_none() -> None:
+    # Installed llama-index-core 0.14.26 behaviour, recorded for Phases 3-4: None passes the
+    # flat check (so the contract omits keys instead of storing None).
+    node = TextNode(text="x", metadata={"symbol": None})
+    assert "symbol" in node_to_metadata_dict(node, flat_metadata=True)
+    with pytest.raises(ValueError, match="must be one of"):
+        node_to_metadata_dict(TextNode(text="x", metadata={"tags": ["a"]}), flat_metadata=True)
+
+
+def test_identical_pieces_on_the_same_line_share_a_hash_but_not_an_id() -> None:
+    # Known risk for Phase 4: fusion deduplicates on hash (text + metadata), so two forced
+    # pieces with the same text on the same line collapse there. P4 adds no key to avoid it.
+    text = "VALUES = " + " ".join(["same"] * 60) + "\n"
+    nodes = [n for n in _nodes(text, 40) if n.text == "same same same same same same same same"]
+
+    assert len(nodes) >= 2
+    assert nodes[0].hash == nodes[1].hash
+    assert nodes[0].node_id != nodes[1].node_id
+
+
+# --- Step 5: fallbacks --------------------------------------------------------------------------
+
+MD_MIXED = (
+    "---\ntitle: front matter\n---\nIntro paragraph.\n\n# Title\n\n## Empty\n\n## Usage\n\n"
+    "Run it:\n\n```bash\n# not a heading\nmake run\n```\n\nSetext heading\n--------------\n\n"
+    "Text under setext.\n\n---\n\nAfter a thematic break.\n"
+)
+MD_BIG_SECTION = "## Big\n\n" + "\n\n".join(f"Paragraph {i} " + "word " * 20 for i in range(6))
+MD_FENCES = (
+    "# Fences\n\nIntro.\n\n~~~python\n# comment, not a heading\nx = 1\n~~~\n\n"
+    "- item\n\n    ```\n    # still code\n    ```\n\n````\n```\n# inside a longer fence\n````\n"
+    "\n## After\n\nDone.\n"
+)
+MD_UNCLOSED = "# Start\n\nText.\n\n```\n# never closed\n## also code\n"
+MD_EMPTY_HEADING = "#\n\nBody of an empty heading.\n\n## Named\n\nMore.\n"
+MD_NON_ASCII = "# Título\n\nÑandú y café: 🎉.\n"
+YAML_CI = (
+    "# CI config\nname: ci\n\non:\n  push:\n    branches: [main]\n\njobs:\n"
+    "  lint:\n    runs-on: ubuntu\n    steps:\n      - run: make lint\n"
+    "  test:\n    runs-on: ubuntu\n    steps:\n      - name: tests\n        run: |\n"
+    "          make test\n\n          make check\n"
+    "  build:\n    runs-on: ubuntu\n    steps:\n      - run: docker build .\n"
+)
+YAML_SCALAR = "script: |\n" + "".join(
+    f"  echo line {i}\n" + ("\n" if i % 3 == 2 else "") for i in range(12)
+)
+YAML_DOCUMENTS = "---\na: 1\n---\nb: 2\n...\n"
+TOML_STRING = (
+    '[project]\nname = "x"\ndescription = """\n[not a table]\n"""\n\n'
+    '[tool.ruff]\nline-length = 100\nselect = [\n  "E",\n  "F",\n]\n'
+)
+TOML_BIG_TABLE = "[deps]\n" + "\n".join(f'pkg{i} = "{i}.0"\n' for i in range(10))
+DOCKERFILE = (
+    "# syntax=docker/dockerfile:1\nFROM python:3.11 AS build\nRUN apt-get update && \\\n"
+    "    apt-get install -y gcc\nRUN <<EOF\necho one\nFROM is not an instruction here\nEOF\n\n"
+    'FROM python:3.11-slim\nCOPY --from=build /app /app\nCMD ["python"]\n'
+)
+MAKEFILE = (
+    ".PHONY: all\n\n# build everything\nall: build test\n\nbuild:\n\tgcc -o app main.c\n\n"
+    "\tstrip app\n\ndefine HELP\nUsage: make\n\nTargets: all\nendef\n\n"
+    "ifeq ($(CI),1)\nFLAGS = -O2 \\\n  -g\nelse\nFLAGS = -O0\nendif\n"
+)
+TEXT_JS = "function a() {\n  return 1;\n}\n\nfunction b() {\n  return 2;\n}\n"
+LONG_WORDS = " ".join(f"w{i}" for i in range(400))
+
+FALLBACK_CASES: dict[str, tuple[str, str, int]] = {
+    "md_mixed": ("markdown", MD_MIXED, 200),
+    "md_big_section": ("markdown", MD_BIG_SECTION, 200),
+    "md_fences": ("markdown", MD_FENCES, 120),
+    "md_unclosed": ("markdown", MD_UNCLOSED, CAP),
+    "md_no_headings": ("markdown", "Just text.\n\nMore text.\n", CAP),
+    "md_empty_heading": ("markdown", MD_EMPTY_HEADING, CAP),
+    "md_non_ascii": ("markdown", MD_NON_ASCII, CAP),
+    "md_long_line": ("markdown", "# T\n\n" + LONG_WORDS + "\n", 300),
+    "yaml_ci": ("yaml", YAML_CI, 200),
+    "yaml_scalar": ("yaml", YAML_SCALAR, 60),
+    "yaml_documents": ("yaml", YAML_DOCUMENTS, CAP),
+    "toml_string": ("toml", TOML_STRING, 60),
+    "toml_big_table": ("toml", TOML_BIG_TABLE, 60),
+    "dockerfile": ("dockerfile", DOCKERFILE, 120),
+    "makefile": ("makefile", MAKEFILE, 80),
+    "text_js": ("javascript", TEXT_JS, 40),
+    "text_long_line": ("go", LONG_WORDS + "\n", 300),
+    "text_unknown_label": ("cobol", TEXT_JS, CAP),
+}
+
+
+def _fallback(label: str, text: str, cap: int) -> Segmentation:
+    return segmenter_for(label)[1](text, max_chars=cap)
+
+
+def _natural_units(label: str, text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """(units that must stay whole when they fit, units whose size can justify forcing)."""
+    if label == "markdown":
+        fences = fence_regions(text)
+        return fences, fences + markdown_section_regions(text)
+    blocks = config_top_regions(text, label)
+    return blocks, blocks
+
+
+def _fallback_shape(label: str, text: str, cap: int) -> list[tuple[str, str, bool]]:
+    result = _fallback(label, text, cap)
+    return [(s.kind.value, " > ".join(s.name_path), s.forced) for s in result.spans]
+
+
+def _fallback_texts(label: str, text: str, cap: int) -> list[str]:
+    return [text[s.start : s.end] for s in _fallback(label, text, cap).spans]
+
+
+@pytest.mark.parametrize("case", sorted(FALLBACK_CASES))
+def test_every_fallback_case_satisfies_its_invariants(case: str) -> None:
+    label, text, cap = FALLBACK_CASES[case]
+    result = _fallback(label, text, cap)
+    whole, sized = _natural_units(label, text)
+
+    violations = (
+        check_shared(text, result, cap, lambda: _fallback(label, text, cap))
+        + check_units_whole(text, result.spans, whole, cap)
+        + check_forced_where_needed(text, result.spans, sized, cap)
+    )
+
+    assert violations == []
+    assert result.status is ParseStatus.CLEAN
+
+
+def test_fallback_checkers_detect_their_violations() -> None:
+    text = "```\na\nb\n```\n"
+    split = [_span(0, 5), _span(6, 11)]
+
+    assert _codes(check_units_whole(text, split, fence_regions(text), CAP)) == {"F1"}
+    assert _codes(check_forced_where_needed(text, [_span(0, 11, forced=True)], [], CAP)) == {"F2"}
+
+
+def test_markdown_sections_follow_headings_outside_fences() -> None:
+    assert _fallback_shape("markdown", MD_MIXED, 200) == [
+        ("section", "", False),  # front matter and the preamble
+        ("section", "Title > Usage", False),  # two heading-only sections joined it
+        ("section", "Title > Setext heading", False),  # '---' after a blank line is a rule
+    ]
+    texts = _fallback_texts("markdown", MD_MIXED, 200)
+    assert texts[1].startswith("# Title\n\n## Empty\n\n## Usage")
+    assert "# not a heading" in texts[1]
+
+
+def test_a_big_section_is_split_at_paragraphs_keeping_its_heading_with_the_first() -> None:
+    shape = _fallback_shape("markdown", MD_BIG_SECTION, 200)
+    texts = _fallback_texts("markdown", MD_BIG_SECTION, 200)
+
+    assert len(shape) > 1
+    assert set(shape) == {("section", "Big", True)}
+    assert texts[0].startswith("## Big\n\nParagraph 0")
+
+
+def test_fences_hide_headings_and_a_fitting_fence_is_never_split() -> None:
+    paths = [p for _, p, _ in _fallback_shape("markdown", MD_FENCES, 120)]
+
+    assert paths[-1] == "Fences > After"  # "## After" sits under "# Fences"
+    assert set(paths) == {"Fences", "Fences > After"}  # no '#' inside a fence opened a section
+
+
+def test_an_unclosed_fence_runs_to_the_end() -> None:
+    assert _fallback_shape("markdown", MD_UNCLOSED, CAP) == [("section", "Start", False)]
+
+
+def test_text_without_headings_is_one_preamble_section() -> None:
+    assert _fallback_shape("markdown", "Just text.\n\nMore text.\n", CAP) == [
+        ("section", "", False)
+    ]
+
+
+def test_an_empty_heading_adds_nothing_to_the_path() -> None:
+    assert _fallback_shape("markdown", MD_EMPTY_HEADING, CAP) == [
+        ("section", "", False),
+        ("section", "Named", False),
+    ]
+
+
+def test_yaml_steps_down_indentation_levels_keeping_jobs_whole() -> None:
+    texts = _fallback_texts("yaml", YAML_CI, 200)
+
+    assert _fallback_shape("yaml", YAML_CI, 200) == [
+        ("config_block", "", False),
+        ("config_block", "", True),
+        ("config_block", "", True),
+    ]
+    assert texts[0].startswith("# CI config\nname: ci")  # the comment stays with its block
+    assert texts[1].startswith("jobs:\n  lint:")  # the parent key keeps its first child
+    lines = YAML_CI.split("\n")
+    after_jobs = lines.index("jobs:") + 1
+    starts = [
+        i
+        for i, line in enumerate(lines)
+        if i >= after_jobs and line.startswith("  ") and line[2] != " "
+    ]
+    ends = [*starts[1:], len(lines)]
+    jobs = ["\n".join(lines[a:b]).rstrip() for a, b in zip(starts, ends, strict=True)]
+    assert [job.split(":")[0].strip() for job in jobs] == ["lint", "test", "build"]
+    assert min(len(job) for job in jobs) > 40  # whole jobs, not their first line
+    for job in jobs:  # every job fits, so each one is whole in exactly one span
+        assert sum(job in t for t in texts) == 1
+
+
+def test_a_yaml_block_scalar_splits_at_blank_lines_not_at_its_text() -> None:
+    texts = _fallback_texts("yaml", YAML_SCALAR, 60)
+
+    assert len(texts) > 1
+    assert all(not t.strip().startswith("echo line 1\n") for t in texts[1:])
+
+
+def test_yaml_documents_are_top_level_blocks() -> None:
+    assert _fallback_texts("yaml", YAML_DOCUMENTS, 8) == ["---\na: 1", "---\nb: 2", "..."]
+
+
+def test_a_bracket_inside_a_toml_string_is_not_a_table() -> None:
+    assert _fallback_texts("toml", TOML_STRING, 60) == [
+        TOML_STRING[: TOML_STRING.index("\n\n[tool")],
+        TOML_STRING[TOML_STRING.index("[tool") :].rstrip(),
+    ]
+
+
+def test_an_oversized_toml_table_splits_between_statements() -> None:
+    shape = _fallback_shape("toml", TOML_BIG_TABLE, 60)
+
+    assert len(shape) > 1
+    assert {f for _, _, f in shape} == {True}
+
+
+def test_dockerfile_instructions_keep_continuations_and_heredocs_and_stages_never_merge() -> None:
+    texts = _fallback_texts("dockerfile", DOCKERFILE, 1000)
+
+    assert len(texts) == 2  # one chunk per stage although both fit together
+    assert texts[0].startswith("# syntax=docker/dockerfile:1\nFROM python:3.11 AS build")
+    assert texts[0].endswith("FROM is not an instruction here\nEOF")
+    assert texts[1].startswith("FROM python:3.11-slim")
+
+
+def test_makefile_rules_keep_recipes_defines_and_conditionals() -> None:
+    texts = _fallback_texts("makefile", MAKEFILE, 1000)
+    assert texts == [MAKEFILE.rstrip()]
+    whole = config_top_regions(MAKEFILE, "makefile")
+    assert check_units_whole(MAKEFILE, _fallback("makefile", MAKEFILE, 80).spans, whole, 80) == []
+
+
+def test_generic_text_merges_blank_line_blocks_up_to_the_cap() -> None:
+    assert _fallback_texts("javascript", TEXT_JS, 40) == [
+        "function a() {\n  return 1;\n}",
+        "function b() {\n  return 2;\n}",
+    ]
+    assert _fallback_texts("javascript", TEXT_JS, CAP) == [TEXT_JS.rstrip()]
+
+
+@pytest.mark.parametrize("label", ["markdown", "yaml", "toml", "dockerfile", "makefile", "c"])
+@pytest.mark.parametrize("extra", [0, 1])
+def test_fallbacks_exact_cap_fits_and_one_more_character_does_not(label: str, extra: int) -> None:
+    text = "alpha beta\ngamma delta\n"
+    cap = len(text.rstrip()) - extra
+
+    result = _fallback(label, text, cap)
+
+    assert check_shared(text, result, cap, lambda: _fallback(label, text, cap)) == []
+    assert len(result.spans) == (1 if extra == 0 else 2)
+
+
+@pytest.mark.parametrize("label", ["markdown", "yaml", "toml", "dockerfile", "makefile", "rust"])
+@pytest.mark.parametrize("text", ["", " \n\t\n"])
+def test_fallbacks_give_no_spans_for_blank_text(label: str, text: str) -> None:
+    assert _fallback(label, text, CAP).spans == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "x" * 100_000 + "\n",
+        ("#" * 5000 + "\n") * 20,
+        ("`" * 5000 + "\n") * 20,
+        ("- " * 10_000 + "\n") * 5,
+        ("[" * 5000 + "\n") * 20,
+    ],
+    ids=["long_line", "hashes", "backticks", "dashes", "brackets"],
+)
+@pytest.mark.parametrize("label", ["markdown", "yaml", "toml", "dockerfile", "makefile", "c"])
+def test_pathological_inputs_finish_quickly(label: str, text: str) -> None:
+    started = time.perf_counter()
+    result = _fallback(label, text, CAP)
+
+    assert time.perf_counter() - started < 2.0
+    assert check_cap(text, result.spans, CAP) == []
+    assert check_coverage(text, result.spans) == []
+
+
+# --- Step 6: the complete chunker ---------------------------------------------------------------
+
+RULES_FILE = REPO_ROOT / "config" / "ingest.ignore"
+
+
+def _repo_documents() -> list[Document]:
+    """Interleaved languages, in the order the loader would never produce (on purpose)."""
+    return [
+        _document(TWO_FUNCTIONS, "src/a.py"),
+        _document(MD_MIXED, "README.md", "markdown"),
+        _document(YAML_CI, "ci.yml", "yaml"),
+        _document(TEXT_JS, "web/app.js", "javascript"),
+        _document(BIG_CLASS, "src/service.py"),
+    ]
+
+
+def test_all_strategies_run_and_output_keeps_input_order_then_position() -> None:
+    result = chunk_documents_with_report(_repo_documents())
+    paths = [n.metadata["file_path"] for n in result.nodes]
+
+    assert list(dict.fromkeys(paths)) == [
+        "src/a.py",
+        "README.md",
+        "ci.yml",
+        "web/app.js",
+        "src/service.py",
+    ]
+    assert set(result.report.by_strategy) == {"syntactic", "markdown", "config", "text"}
+    for path in set(paths):
+        starts = [n.start_char_idx or 0 for n in result.nodes if n.metadata["file_path"] == path]
+        assert starts == sorted(starts)
+
+
+def test_the_report_is_consistent_with_the_nodes() -> None:
+    result = chunk_documents_with_report(
+        _repo_documents(), rules=ChunkingRules(max_chunk_chars=120)
+    )
+    report = result.report
+    sizes = [len(n.text) for n in result.nodes]
+
+    assert report.documents == 5
+    assert report.nodes == len(result.nodes) == len(result.spans)
+    assert sum(t.nodes for t in report.by_language.values()) == report.nodes
+    assert sum(t.nodes for t in report.by_strategy.values()) == report.nodes
+    assert sum(report.by_kind.values()) == report.nodes
+    assert (
+        report.forced == sum(report.forced_by_kind.values()) == sum(s.forced for s in result.spans)
+    )
+    assert dict(report.fallback_reasons) == {"no_parser": 3}
+    assert (report.size.p50, report.size.p90, report.size.max) == (
+        percentile(sizes, 50),
+        percentile(sizes, 90),
+        max(sizes),
+    )
+    assert report.max_embed_chars == max(
+        len(n.get_content(metadata_mode=MetadataMode.EMBED)) for n in result.nodes
+    )
+    assert (
+        report
+        == chunk_documents_with_report(
+            _repo_documents(), rules=ChunkingRules(max_chunk_chars=120)
+        ).report
+    )
+    assert json.loads(json.dumps(report.to_dict()))["nodes"] == report.nodes
+    assert report.render_text().startswith("Chunked: 5 documents -> ")
+
+
+@pytest.mark.parametrize(
+    ("values", "percent", "expected"),
+    [
+        ([], 50, 0),
+        ([7], 50, 7),
+        ([1, 2], 50, 1),
+        (list(range(1, 11)), 50, 5),
+        (list(range(1, 11)), 90, 9),
+    ],
+)
+def test_percentiles_use_the_nearest_rank_method(
+    values: list[int], percent: int, expected: int
+) -> None:
+    assert percentile(values, percent) == expected
+
+
+def test_no_documents_give_no_nodes_and_an_empty_report() -> None:
+    result = chunk_documents_with_report([])
+
+    assert result.nodes == ()
+    assert (result.report.documents, result.report.nodes, result.report.size.max) == (0, 0, 0)
+
+
+def test_a_whitespace_only_document_gives_no_nodes_and_is_counted() -> None:
+    result = chunk_documents_with_report([_document("  \n\t\n", "blank.py")])
+
+    assert result.nodes == ()
+    assert result.report.empty_documents == ("blank.py",)
+
+
+def _without(key: str) -> Document:
+    document = _document("x = 1\n", "a.py")
+    document.metadata.pop(key)
+    return document
+
+
+def _with(key: str, value: object) -> Document:
+    document = _document("x = 1\n", "a.py")
+    document.metadata[key] = value
+    return document
+
+
+@pytest.mark.parametrize(
+    "documents",
+    [
+        [_without("content_hash")],
+        [_with("size_bytes", True)],  # a bool is not an int here
+        [_with("num_lines", "1")],
+        [_with("file_path", "b.py")],  # doc_id != file_path
+        [_document("x = 1\n", "a.py"), _document("y = 2\n", "a.py")],  # duplicate doc_id
+        [Document(text="x = 1\n", metadata=_document("x = 1\n", "a.py").metadata)],  # no id_
+    ],
+    ids=["missing_key", "bool_for_int", "str_for_int", "doc_id_mismatch", "duplicate", "no_id"],
+)
+def test_invalid_documents_are_a_typed_error(documents: list[Document]) -> None:
+    with pytest.raises(InvalidDocumentError):
+        chunk_documents(documents)
+
+
+def test_chunk_documents_is_a_thin_wrapper() -> None:
+    documents = _repo_documents()
+    nodes = chunk_documents(documents)
+
+    assert isinstance(nodes, list)
+    assert [n.node_id for n in nodes] == [
+        n.node_id for n in chunk_documents_with_report(documents).nodes
+    ]
+
+
+def test_a_file_whose_strategy_fails_degrades_to_generic_text(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def failing(text: str, *, max_chars: int) -> Segmentation:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(chunker, "segmenter_for", lambda label: (Strategy.SYNTACTIC, failing))
+
+    with caplog.at_level(logging.WARNING, logger="src.ingestion.chunker"):
+        result = chunk_documents_with_report([_document(TWO_FUNCTIONS, "src/a.py")])
+
+    assert result.report.degraded_files == ("src/a.py",)
+    assert dict(result.report.fallback_reasons) == {"segmentation_failed": 1}
+    assert dict(result.report.by_strategy) == {"text": NodeTally(1, 1)}
+    (record,) = [r for r in caplog.records if r.getMessage() == "chunking.degraded"]
+    assert record.levelno == logging.WARNING
+    assert "src/a.py" not in json.dumps({k: str(v) for k, v in record.__dict__.items()})
+
+
+def test_an_unavailable_parser_is_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unavailable(text: str, *, max_chars: int) -> Segmentation:
+        raise ParserUnavailableError("grammar missing")
+
+    monkeypatch.setattr(chunker, "segmenter_for", lambda label: (Strategy.SYNTACTIC, unavailable))
+
+    with pytest.raises(ParserUnavailableError):
+        chunk_documents([_document(TWO_FUNCTIONS, "src/a.py")])
+
+
+def test_the_run_logs_counts_never_content(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.DEBUG):
+        chunk_documents(_repo_documents())
+
+    (done,) = [r for r in caplog.records if r.getMessage() == "chunking.done"]
+    assert done.levelno == logging.INFO
+    assert done.__dict__["nodes"] > 0
+    rendered = json.dumps([{k: str(v) for k, v in r.__dict__.items()} for r in caplog.records])
+    for secret in ("def alpha", "Service", "make lint", "function a", "Title"):
+        assert secret not in rendered
+
+
+def test_no_module_in_src_imports_the_chunker() -> None:
+    importers = [
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "src").rglob("*.py")
+        if path.name != "chunker.py"
+        and (
+            "ingestion.chunker" in path.read_text(encoding="utf-8")
+            or "import chunker" in path.read_text(encoding="utf-8")
+        )
+    ]
+    assert importers == []
+
+
+# --- Step 6: CLI ----------------------------------------------------------------------------
+
+
+def _write_repo(root: Path) -> Path:
+    for rel, content in {
+        "src/a.py": TWO_FUNCTIONS,
+        "README.md": MD_MIXED,
+        "ci.yml": YAML_CI,
+        "web/app.js": TEXT_JS,
+        "src/escape.py": "x = '\\x1b[31m'  # \x1b[31mred\x1b[0m\n",
+    }.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return root
+
+
+def _cli(argv: list[str]) -> tuple[int, str]:
+    out = io.StringIO()
+    code = chunker.main([*argv, "--rules-file", str(RULES_FILE)], stdout=out)
+    return code, out.getvalue()
+
+
+def test_cli_text_report(tmp_path: Path) -> None:
+    code, output = _cli(["--repo", str(_write_repo(tmp_path))])
+
+    assert code == 0
+    assert output.startswith("Chunked: 5 documents -> ")
+    assert output.endswith("RESULT: OK (exit 0 OK)\n")
+
+
+def test_cli_json_is_the_report(tmp_path: Path) -> None:
+    repo = _write_repo(tmp_path)
+
+    code, output = _cli(["--repo", str(repo), "--json"])
+
+    documents = load_repository_with_report(repo, rules_file=RULES_FILE).documents
+    assert code == 0
+    assert json.loads(output) == chunk_documents_with_report(documents).report.to_dict()
+
+
+def test_cli_list_has_one_line_per_node(tmp_path: Path) -> None:
+    repo = _write_repo(tmp_path)
+
+    code, output = _cli(["--repo", str(repo), "--list"])
+
+    documents = load_repository_with_report(repo, rules_file=RULES_FILE).documents
+    lines = output.splitlines()
+    assert code == 0
+    assert len(lines) == len(chunk_documents(documents))
+    assert all(len(line.split("\t")) == 6 for line in lines)
+
+
+def test_cli_show_escapes_control_characters(tmp_path: Path) -> None:
+    code, output = _cli(["--repo", str(_write_repo(tmp_path)), "--show", "src/escape.py"])
+
+    assert code == 0
+    assert "\x1b" not in output
+    assert "\\x1b[31mred" in output
+
+
+def test_cli_show_rejects_a_path_that_is_not_a_loaded_document(tmp_path: Path) -> None:
+    code, output = _cli(["--repo", str(_write_repo(tmp_path)), "--show", "../etc/passwd"])
+
+    assert code == chunker.USAGE_ERROR == 2
+    assert "is not a loaded document" in output
+
+
+def test_cli_exit_codes_for_missing_root_and_empty_repository(tmp_path: Path) -> None:
+    (tmp_path / "data.json").write_text("{}\n", encoding="utf-8")
+
+    assert _cli(["--repo", str(tmp_path / "missing")])[0] == ExitCode.INGESTION
+    assert _cli(["--repo", str(tmp_path)])[0] == ExitCode.NO_DOCUMENTS
+
+
+def test_cli_maps_invalid_configuration_to_exit_10(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REPO_PATH", "relative/path")
+    monkeypatch.delitem(sys.modules, "src.config")
+
+    out = io.StringIO()
+    code = chunker.main([], stdout=out)
+
+    assert code == ExitCode.CONFIGURATION
+    assert "REPO_PATH" in out.getvalue()
+
+
+def test_cli_blocks_and_reports_network_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = chunker.chunk_documents_with_report
+
+    def leaky(*args: object, **kwargs: object) -> object:
+        socket.getaddrinfo("example.com", 443)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(chunker, "chunk_documents_with_report", leaky)
+
+    assert _cli(["--repo", str(_write_repo(tmp_path))])[0] == ExitCode.EXTERNAL_NETWORK
+
+
+_DETERMINISM_CHILD = textwrap.dedent(
+    """
+    import hashlib, json, sys
+    from pathlib import Path
+    sys.path.insert(0, sys.argv[1])
+    from src.ingestion.chunker import chunk_documents
+    from src.ingestion.loader import load_repository
+    documents = load_repository(Path(sys.argv[2]), rules_file=Path(sys.argv[3]))
+    print(json.dumps([
+        [n.node_id, hashlib.sha256(n.text.encode()).hexdigest(), list(n.metadata.items()), n.hash]
+        for n in chunk_documents(documents)
+    ]))
+    """
+)
+
+
+def test_nodes_are_identical_across_processes_and_hash_seeds(tmp_path: Path) -> None:
+    repo = _write_repo(tmp_path / "repo")
+    outputs = []
+    for seed in ("0", "4242"):
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), "PYTHONHASHSEED": seed}
+        result = subprocess.run(  # noqa: S603 (this interpreter, a constant script)
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                _DETERMINISM_CHILD,
+                str(REPO_ROOT),
+                str(repo),
+                str(RULES_FILE),
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        outputs.append(result.stdout)
+
+    assert outputs[0] == outputs[1]
+    assert len(json.loads(outputs[0])) > 5
+
+
+def test_the_module_runs_as_a_script(tmp_path: Path) -> None:
+    repo = _write_repo(tmp_path / "repo")
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)}
+
+    result = subprocess.run(  # noqa: S603 (this interpreter, constant arguments)
+        [
+            sys.executable,
+            "-m",
+            "src.ingestion.chunker",
+            "--repo",
+            str(repo),
+            "--json",
+            "--rules-file",
+            str(RULES_FILE),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["documents"] == 5
+
+
+# --- Step 5: regressions found on the corpus (synthetic reproductions) ------------------------
+
+
+def test_comments_that_would_push_a_fitting_config_block_over_the_cap_get_their_own_chunk() -> None:
+    # Found on the corpus: a long comment run attached to the next key forced a split of a
+    # key block that fits. Same rule as for Python definitions (Gate 1 policies).
+    comments = "".join(f"# note {i}: " + "x" * 30 + "\n" for i in range(6))
+    text = "first: 1\n\n" + comments + "second:\n  a: 1\n  b: 2\n"
+    cap = 120
+    result = _fallback("yaml", text, cap)
+    whole, sized = _natural_units("yaml", text)
+
+    assert check_units_whole(text, result.spans, whole, cap) == []
+    assert check_forced_where_needed(text, result.spans, sized, cap) == []
+    texts = _fallback_texts("yaml", text, cap)
+    assert texts[-1] == "second:\n  a: 1\n  b: 2"  # the key block is whole and alone
+    assert not any(s.forced for s in result.spans if text[s.start : s.end].startswith("second"))
+
+
+def test_comments_between_config_blocks_belong_to_the_next_block_for_the_oracle_too() -> None:
+    text = "FROM a\nRUN one\n\n# about the next one\n# second line\nRUN two\n"
+
+    regions = config_top_regions(text, "dockerfile")
+
+    assert [text[a:b] for a, b in regions] == [
+        "FROM a",
+        "RUN one",
+        "# about the next one\n# second line\nRUN two",
+    ]

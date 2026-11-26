@@ -38,6 +38,14 @@ IMPORTS_UNDER_GUARD: tuple[str, ...] = (
     "src.ingestion.chunker",
     "src.ingestion.parser_registry",
     "src.ingestion.segmenter",
+    # Phase 2 Steps 3-6 (appended): strategies, fallbacks, nodes, report and the chunker.
+    "src.ingestion.lines",
+    "src.ingestion.markdown_splitter",
+    "src.ingestion.config_splitter",
+    "src.ingestion.text_splitter",
+    "src.ingestion.strategies",
+    "src.ingestion.nodes",
+    "src.ingestion.chunk_report",
 )
 
 _CHILD = textwrap.dedent(
@@ -251,4 +259,99 @@ def test_grammar_load_parse_and_segment_need_no_network_and_write_nothing(
     assert report["violations"] == []
     assert report["abi"] == 15
     assert report["kinds"] == ["class"]
+    assert report["files_written"] == []
+
+
+# --- Phase 2 Steps 3-6: the whole chunking pipeline needs no network and writes nothing ---
+
+_CHUNK_CHILD = textwrap.dedent(
+    """
+    import json, sys
+    from pathlib import Path
+
+    repo_root, work = sys.argv[1], Path(sys.argv[2])
+    sys.path.insert(0, repo_root)
+    from src.network_guard import NetworkGuard
+
+    with NetworkGuard() as guard:
+        from llama_index.core import Document
+        from llama_index.core.schema import MetadataMode
+        from llama_index.core.vector_stores.utils import (
+            metadata_dict_to_node,
+            node_to_metadata_dict,
+        )
+        from src.ingestion.chunker import chunk_documents_with_report
+
+        samples = {
+            "src/app.py": ("python", "@d\\nclass C:\\n    def m(self):\\n        return 1\\n"),
+            "README.md": ("markdown", "# T\\n\\n```\\n# code\\n```\\n\\n## S\\n\\nText.\\n"),
+            "ci.yml": ("yaml", "jobs:\\n  a:\\n    run: x\\n"),
+            "pyproject.toml": ("toml", "[project]\\nname = 'x'\\n"),
+            "Dockerfile": ("dockerfile", "FROM python\\nRUN echo hi\\n"),
+            "Makefile": ("makefile", "all:\\n\\techo hi\\n"),
+            "web/app.js": ("javascript", "function a() {}\\n"),
+        }
+        documents = [
+            Document(
+                id_=path,
+                text=text,
+                metadata={
+                    "file_path": path,
+                    "language": language,
+                    "size_bytes": len(text.encode()),
+                    "num_lines": text.count("\\n"),
+                    "content_hash": "0" * 64,
+                    "directory": path.rpartition("/")[0],
+                },
+            )
+            for path, (language, text) in samples.items()
+        ]
+        result = chunk_documents_with_report(documents)
+        views = [n.get_content(metadata_mode=mode) for n in result.nodes for mode in MetadataMode]
+        round_trip = all(
+            metadata_dict_to_node(node_to_metadata_dict(n, flat_metadata=True)).hash == n.hash
+            for n in result.nodes
+        )
+    print(json.dumps({
+        "violations": [repr(v) for v in guard.violations],
+        "strategies": sorted(result.report.by_strategy),
+        "nodes": len(result.nodes),
+        "views": len(views),
+        "round_trip": round_trip,
+        "files_written": sorted(p.relative_to(work).as_posix() for p in work.rglob("*")),
+    }))
+    """
+)
+
+
+def test_the_whole_chunking_pipeline_needs_no_network_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(work),
+        "XDG_CACHE_HOME": str(work),
+        "TMPDIR": str(work),
+        "LC_ALL": "C.UTF-8",
+    }
+
+    result = subprocess.run(  # noqa: S603 (this interpreter, a constant script)
+        [sys.executable, "-I", "-B", "-c", _CHUNK_CHILD, str(REPO_ROOT), str(work)],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["violations"] == []
+    assert report["strategies"] == ["config", "markdown", "syntactic", "text"]
+    assert report["nodes"] >= 7
+    assert report["views"] == 4 * report["nodes"]
+    assert report["round_trip"] is True
     assert report["files_written"] == []

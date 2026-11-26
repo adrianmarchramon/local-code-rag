@@ -5,7 +5,8 @@ models and context window taken from src/config.py, the single source of truth; 
 DEFAULT_* constants do not depend on environment variables. Hygiene: no absolute user
 paths. `TODO(user)` markers are allowed. Phase 1: every discard reason, every language label,
 the frozen corpus commit and the expected totals are named. Phase 2: the installed tree-sitter
-versions, every span kind and the chunk cap are named.
+versions, every span kind and the chunk cap are named; Steps 3-6: every strategy, every
+fallback reason and the node-ID namespace are named.
 """
 
 import re
@@ -17,9 +18,11 @@ from corpus_manifest import FROZEN_CORPUS_SHA
 
 from src import config
 from src.ingestion.chunker import DEFAULT_MAX_CHUNK_CHARS
+from src.ingestion.nodes import NODE_ID_NAMESPACE
 from src.ingestion.reasons import DiscardReason
 from src.ingestion.rules import IngestionRules
 from src.ingestion.spans import SpanKind
+from src.ingestion.strategies import FallbackReason, Strategy
 
 DOC = Path(__file__).resolve().parents[1] / "docs" / "decisions.md"
 REQUIRED_H2 = (
@@ -33,6 +36,7 @@ REQUIRED_H2 = (
     "## 8. Phase 1 — Loading and metadata (Steps 4\u20135)",  # \u2013: en dash (RUF001)
     "## 9. Phase 1 — Languages, tests and closure (Steps 6\u20137)",  # \u2013: en dash
     "## 10. Phase 2 — Syntax-aware chunking (Steps 1\u20132)",  # \u2013: en dash
+    "## 11. Phase 2 — Metadata, fallbacks and the chunker (Steps 3\u20136)",  # \u2013: en dash
 )
 USER_PATH = re.compile(r"/home/[^/\s]+|/Users/[^/\s]+|[A-Za-z]:\\Users\\", re.IGNORECASE)
 
@@ -95,3 +99,12 @@ def test_document_names_every_span_kind(kind: str) -> None:
 
 def test_document_names_the_chunk_cap() -> None:
     assert f"cap {DEFAULT_MAX_CHUNK_CHARS} characters" in "\n".join(_doc_lines())
+
+
+@pytest.mark.parametrize("code", [s.value for s in Strategy] + [r.value for r in FallbackReason])
+def test_document_names_every_strategy_and_fallback_reason(code: str) -> None:
+    assert f"`{code}`" in "\n".join(_doc_lines()), f"docs/decisions.md does not explain {code!r}"
+
+
+def test_document_names_the_node_id_namespace() -> None:
+    assert str(NODE_ID_NAMESPACE) in "\n".join(_doc_lines())

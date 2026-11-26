@@ -5,6 +5,7 @@
 | 2026-11-24 | 0: Setup and fundamentals (Steps 1–7) | Use case, model, privacy argument, corpus, stack. Phases 1+ are planned, not built. |
 | 2026-11-25 | 1: Ingestion (Steps 1–7) | Filters, loader, metadata, languages, tests and the key test (sections 7–9). Phases 2+ are planned, not built. |
 | 2026-11-25 | 2: Chunking (Steps 1–2) | Coherence invariants, parser registry and segmenter (section 10). Steps 3–7 and Phases 3+ are planned, not built. |
+| 2026-11-26 | 2: Chunking (Steps 3–6) | Dispatch, nodes, fallbacks, chunker, report and CLI (section 11). Step 7 and Phases 3+ are planned, not built. |
 
 ## 0. How to read this document
 
@@ -163,6 +164,7 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | Public documentation reads (PyPI JSON for `tree-sitter-language-pack`, `tree-sitter`, `tree-sitter-python`; the language pack's README and docs; py-tree-sitter docs) | 2026-11-25 22:19:46Z–22:22:22Z | pypi.org, github.com, docs.tree-sitter-language-pack.xberg.io, tree-sitter.github.io | HTTP GETs; no repository data | 2 / preparation | [S] |
 | Public documentation re-read (PyPI JSON for `tree-sitter` and `tree-sitter-python`: releases, dates, sizes, hashes, yanked flags) | 2026-11-25 23:15:25Z | pypi.org | HTTP GETs; no repository data | 2 / Steps 1–2 | [S] |
 | `uv add "tree-sitter==0.26.1" "tree-sitter-python==0.25.0"` under `umask 022` (2 wheels, 782,192 B; hashes match PyPI) | 2026-11-25 23:18:10–23:18:11Z | pypi.org, files.pythonhosted.org | Package names and versions, uv's User-Agent | 2 / Steps 1–2 | [M] |
+| Phase 2 Steps 3–6: no download, no installation, no documentation read | 2026-11-26 | none | Nothing | 2 / Steps 3–6 | [M] |
 
 **3.4 Controls matrix**
 
@@ -176,6 +178,7 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | Network guard | Blocks and records non-loopback connections and name lookups in the Python process, for every test (autouse) and for `make verify-local` | The Ollama server process, subprocesses, C extensions that bypass Python's `socket` | `make test`: 0 violations; `verify-local`: `blocked_attempts=0` [M] |
 | Static URL test | Non-loopback URLs in string literals under `src/` | URLs built at runtime; documentation | `tests/test_no_external_urls.py` [M] |
 | Guard-independent network check (`strace -f -e trace=network`, `bwrap --unshare-net`) | Native code, such as tree-sitter's C core, that the Python guard cannot see | Hosts without `strace` or `bwrap`; it is run by hand (Appendix S1), not by the suite | 0 network system calls; segmenting works with no network [M] (10.4) |
+| Guard-independent check of the full chunking pipeline (Appendix S3) | Native code anywhere in import, segmentation and node building | Same as above. Every process that imports `llama_index.core` makes urllib3's loopback IPv6 probe (`socket` + `bind` to `::1`, no connect), classified as benign | `bwrap --unshare-net`: works; `strace`: no connect or send to any address [M] (11.7) |
 | `.venv` without hardlinks or group write (`link-mode = "copy"`, `umask 022` in `make install`) | `llama-index-core` uses the NLTK and tiktoken data bundled in its wheel, so their first use needs no download | A `.venv` created another way (plain `uv sync` with a group-writable umask, other tools) | `tests/test_ingestion_privacy.py`: load, tokenizer, stopwords and punkt in a fresh interpreter, 0 violations, 0 files written [M] |
 | `models_present` check | Rejects models with no local weights (remote/cloud) | — | `tests/test_health_check.py` [M] |
 | Socket sampling | Ollama's TCP/UDP sockets to non-loopback peers | Connections shorter than the 1 s interval; lookups through the local resolver (127.0.0.53) | 579 samples, 0 non-loopback [H] |
@@ -719,8 +722,137 @@ Blind splitting violates them: `naive_line_split` every 4 lines (the doc's Step 
 | Recursion | Stepping down follows statement nesting; extremely deep nesting could reach Python's recursion limit |
 | `Parser` per call | Chosen because sharing a parser across threads is not documented as safe [H] |
 | Input precondition | Text normalized by the loader (`\n` only, no BOM, no NUL); a lone `\r` is not a line break for the line index |
-| Open: Step 5 | The generic text splitter for labels without a grammar (G1-Q4) is decided but not built |
-| Open: Step 4 | Confirm that P4 keeps `file_path`, `language` and `symbol` visible to the embedder and the LLM and hides every other key |
+| Step 5 (was open) | Built: the generic text splitter for labels without a grammar or a dedicated splitter, and for files whose strategy fails (section 11.4) |
+| Step 4 (was open) | Resolved: only `file_path`, `language` and `symbol` are visible to the embedding model and the LLM (G3-Q1, section 11.3) |
+
+## 11. Phase 2 — Metadata, fallbacks and the chunker (Steps 3–6)
+
+Steps 3–6 turn the spans of section 10 into the nodes that later phases embed, retrieve and cite, for the whole repository. Step 3 dispatches each document by language, Step 4 turns spans into `TextNode` objects with their metadata, Step 5 adds the fallbacks, and Step 6 builds the chunker, its report and its CLI [D: rag_phase2.md Steps 3–6]. In the corpus, 56 of 88 documents have no grammar, so the fallbacks are the common case. Code:
+- `src/ingestion/strategies.py`: dispatch;
+- `src/ingestion/nodes.py`: nodes;
+- `src/ingestion/{markdown_splitter,config_splitter,text_splitter}.py`: fallbacks;
+- `src/ingestion/lines.py`: line arithmetic shared with the segmenter;
+- `src/ingestion/chunk_report.py`: the report;
+- `src/ingestion/chunker.py`: API and CLI.
+
+**11.1 Decisions**
+
+| ID | Decision | Source |
+|---|---|---|
+| G3-Q1 | Visible to the embedding model and the LLM: `file_path`, `language` and `symbol` only. `start_line`, `end_line` and the four hidden document keys are hidden from both | [U] 2026-11-26 |
+| G3-Q2 | `symbol`: the qualified name in Python (`Class.method`). In Markdown, the heading path joined with ` > ` (empty headings skipped), bounded to 120 characters and keeping the most specific end. No symbol for configuration or generic text | [U] 2026-11-26 |
+| G3-Q3 | A Markdown heading with no body joins the following section, which keeps its own heading path; nothing else is merged | [U] 2026-11-26 |
+| G3-Q4 | A YAML block over the cap is split at the keys or list items of the next indentation level, recursively, each kept whole when it fits; then blank lines, lines, characters | [U] 2026-11-26 |
+| G3-Q5 | A file whose strategy raises `RecursionError` or `ValueError` is segmented as generic text, with reason `segmentation_failed`, a WARNING (path at DEBUG only) and a counter. `ParserUnavailableError` and invalid input stay fatal | [U] 2026-11-26 |
+| G3-Q6 | The line index and the character pieces moved from the segmenter to `lines.py` (non-additive). The spans of the 32 corpus `.py` files are identical before and after (digest `263c2a4d…`, 279 spans) | [U] 2026-11-26; [M] |
+| G3-policies | Approved as listed:<br>• Dispatch per document, in input order, then by position.<br>• Label → strategy map (11.2).<br>• Every strategy returns a `Segmentation`; `SpanKind` grew additively (`section`, `config_block`, `text_block`).<br>• Cap 1500, no overlap, whole lines.<br>• Markdown fences and config blocks that fit are never split.<br>• `forced` on spans and the report only.<br>• Input validation and UUID5 IDs (11.3).<br>• Key order: the six document keys, `symbol`, `start_line`, `end_line` | [U] 2026-11-26 |
+| Corpus fix | Column-0 comments that would push a configuration block that fits over the cap get their own chunk, and the block is not split: the same rule as for Python definitions. Found by invariant F1 on the corpus and reproduced by a synthetic test | [M] 2026-11-26 |
+| IPv6 probe | `strace` shows one `socket(AF_INET6)` + `bind` to `::1` in every process that imports `llama_index.core`: urllib3's import-time IPv6 capability probe (`urllib3/util/connection.py:137`). It is present since Phase 1. There is no `connect`, no send and no DNS. Classified as benign loopback; the guard-independent criterion is refined (11.7) | [U] 2026-11-26; [M] |
+
+**Deviations from rag_phase2.md (Steps 3–6)**
+
+| Doc | This project | Why |
+|---|---|---|
+| Group documents by `language`, then split each group | Per-document dispatch; output in input order, then by position | Determinism: ordering must not depend on grouping |
+| 8 syntax-aware languages; everything else `SentenceSplitter(512, 50)` | `python` syntactic; Markdown, configuration and generic text splitters of our own | P5, P3, G1-Q4. On this corpus the doc's splitter started 80 of its 195 fallback chunks mid-line and cut 7 code blocks and 5 tables ([S], Phase 2 preparation) |
+| `CodeSplitter` with `get_parser(language)` | The section 10 segmenter, through the registry | P1, P2 |
+| "CodeSplitter inherits the document metadata automatically" | A fresh metadata dict per node, in a fixed key order | P4: the node hash depends on order |
+| `end_line = count("\n", 0, end_char_idx) + 1`, omitted when the index is missing | `1 + newlines before the offset` of the last character, with `bisect`; never omitted | R4; Phase 5 prints `?` for a missing line |
+| `extract_symbol_name` re-parses each chunk, sees only direct children (no decorated definitions, no methods) and takes the first | `symbol` comes from the span's name path; nothing is re-parsed | Section 10.3 |
+| `try: … except Exception:` degrades a whole language | Per-file degradation, for `RecursionError` and `ValueError` only | Ruff `BLE`; G3-Q5 |
+| Default IDs (`uuid4`) | UUID5 of a fixed namespace, `doc_id` and the offsets | P4: idempotent re-indexing; Phase 6 start-up matches Phase 3 |
+| `print` in `__main__` | CLI with JSON logs and the loader's exit codes | Ruff `T20` |
+| Step 7 tests build `Document` objects without `id_` | Input validation rejects them (`InvalidDocumentError`) | A random `doc_id` makes node IDs random |
+
+**11.2 Strategy map**
+
+| Labels | Strategy | Segmenter | `symbol` | Reason |
+|---|---|---|---|---|
+| `python` (from the parser registry) | `syntactic` | `segment` (section 10) | `Class.method` | — |
+| `markdown` | `markdown` | `split_markdown` | heading path, ≤ 120 chars | `no_parser` |
+| `yaml`, `toml`, `dockerfile`, `makefile` | `config` | `split_yaml`, `split_toml`, `split_dockerfile`, `split_makefile` | none | `no_parser` |
+| `javascript`, `typescript`, `java`, `go`, `rust`, `c`, `cpp`, `ruby`, `csharp`, `php`, any unknown label | `text` | `split_text` | none | `no_parser` |
+| any label whose segmenter failed on a file | `text` | `split_text` | none | `segmentation_failed` |
+
+A test fails when the loader emits a label that is in neither the registry nor the map.
+
+**11.3 Node contract**
+
+| Field | Value |
+|---|---|
+| `text` | The literal slice `document.text[start:end]`, never stripped; `start_char_idx` and `end_char_idx` are the span offsets |
+| `metadata` | In this order: `file_path` (str), `language` (str), `size_bytes` (int), `num_lines` (int), `content_hash` (str), `directory` (str), `symbol` (str, only when the span has a name path; never `None` or `""`), `start_line` (int), `end_line` (int). Lines are 1-based and inclusive; `end_line` is the line of the last character |
+| Visible to the embedder and the LLM | `file_path`, `language`, `symbol`. Every other key is in fresh `excluded_embed_metadata_keys` and `excluded_llm_metadata_keys` lists per node |
+| `id_` | `str(uuid5(NODE_ID_NAMESPACE, doc_id + "\0" + start + "\0" + end))`, with `NODE_ID_NAMESPACE = 41a05dbb-07dd-4b83-840e-8c25648f281a` (a fixed literal; a golden test pins one ID) |
+| Relationships | `SOURCE` only (the document); `ref_doc_id` = `doc_id` = `file_path`; no previous or next links |
+| Hash | LlamaIndex's `TextNode.hash` = sha256 of text + `str(metadata)`: hidden keys and key order included. Phase 4's reciprocal-rank fusion deduplicates on it. The vector-store round trip (`node_to_metadata_dict` with `flat_metadata=True` and back) keeps hash, ID, offsets and key order |
+
+**11.4 Fallbacks (Step 5)** — custom, iterative and linear; no new library, no `SentenceSplitter` and no `MarkdownNodeParser`. Every strategy keeps I1–I4, I6 and I8.
+- **Markdown:**
+  - ATX and setext headings outside fences. Fences open with ``` or `~~~` at any indentation, close with a run at least as long, and an unclosed fence runs to the end of the file. `---` after a blank line is a thematic break; a leading `---` block is front matter.
+  - The preamble is its own section, and a heading-only section joins the next (G3-Q3).
+  - A section over the cap splits at blank lines outside fences, then lines, then characters; its heading stays with its first part and every piece is forced. A fence that fits is never split.
+- **Configuration:**
+  - Top-level blocks are column-0 YAML keys, list items and `---`; TOML tables (outside multi-line strings and arrays); Dockerfile instructions with continuations and heredocs (a `FROM` always starts a chunk); Makefile rules with their recipes, `define … endef`, conditionals and continuations.
+  - Column-0 comments stay with the block below them, unless they would push a fitting block over the cap (Corpus fix).
+  - Whole blocks merge greedily up to the cap. A block over the cap steps down per G3-Q4 (YAML) or at blank lines (TOML: between statements only), then lines, then characters.
+- **Generic text:** blank-line blocks merged up to the cap, then lines, then characters.
+- **New invariants:**
+  - F1: a fence or a top-level configuration block that fits is never split.
+  - F2: a forced span overlaps a natural unit or a line that does not fit.
+
+  Their oracles are simple scanners in `tests/chunking_invariants.py`, independent of the splitters, and each has a negative test.
+
+**11.5 API, report and CLI (Step 6)**
+- **API:** `chunk_documents(documents, *, rules=None) -> list[BaseNode]` and `chunk_documents_with_report(documents, *, rules=None) -> ChunkResult(nodes, spans, report)`. Both validate the input (all six loader keys with their types, `doc_id == file_path`, no duplicates; otherwise `InvalidDocumentError`) and dispatch, segment, build nodes and report. No I/O, no network, no mutable state; no module in `src/` imports `chunker.py`.
+- **`ChunkReport`:** frozen, no contents, no timings:
+  - documents and nodes, by language and by strategy; nodes by kind;
+  - `forced`, in total and by kind; fallback reasons;
+  - syntax-error files and regions; degraded files; documents without nodes;
+  - node size p50/p90/max, using nearest-rank percentiles: rank `ceil(p/100·n)`;
+  - the longest node as the embedder sees it.
+- **Logs:** one INFO `chunking.done` with counts and `duration_ms`; WARNING `chunking.degraded` without the path; paths at DEBUG only.
+- **CLI:** `python -m src.ingestion.chunker [--repo P] [--rules-file F] [--json | --list | --show FILE_PATH]` (`make chunk CHUNK_FLAGS=…`).
+  - Runs under `NetworkGuard` and uses the loader's exit codes (0, 1, 10, 14, 20, 21), plus 2 when `--show` names a path that is not a loaded document; it never opens that path.
+  - `--show` escapes control characters except newline and tab.
+  - `--list` and `--show` print symbols and content and are run only by the owner.
+
+**11.6 Tests.** All in `tests/test_chunking.py` (275 tests at the end of this step). They cover:
+- **Dispatch:** every label's strategy, unknown labels and the adapter.
+- **Nodes:** keys, types and order; `symbol` in every situation; lines against an independent oracle over all section 10 cases; EMBED, LLM and NONE views; a golden ID; the vector-store round trip; flat-metadata behaviour (`None` accepted, lists rejected); the shared-hash edge case.
+- **Fallbacks:** F1, F2 and the shared invariants over 18 cases (fences with `#`, unclosed fence, no headings, empty heading, YAML block scalar with blank lines, `---` documents, TOML multi-line string with `[`, Dockerfile heredoc and continuation, Makefile recipe with blank lines, non-ASCII); exact cap and cap + 1; pathological inputs (100,000-character line, thousands of `#`, backticks, dashes and brackets) under 2 s.
+- **Chunker:** all four strategies; ordering with interleaved languages; report consistency; empty and invalid input; the degradation policy; exit codes; `--show` escaping and unknown paths; logs without content; identical nodes across processes with different `PYTHONHASHSEED`; two corpus regressions reproduced synthetically.
+
+**11.7 Privacy** [M], 2026-11-26
+- **Fresh interpreter:** `tests/test_ingestion_privacy.py` runs `chunk_documents_with_report` on seven labels (all four strategies) in a fresh interpreter with `NetworkGuard` active before any import. It reads every `MetadataMode` view and does the vector-store round trip, with `HOME`, `XDG_CACHE_HOME` and `TMPDIR` in an empty directory: 0 violations, 0 files written.
+- **Guard-independent check (Appendix S3):** under `bwrap --unshare-net` the full run works (99 nodes, all strategies). Under `strace -f -e trace=network` the only calls are urllib3's IPv6 probe (`socket(AF_INET6)` + `bind` to `::1`).
+- **Refined criterion for the full pipeline:** no `connect`, `sendto` or `sendmsg` to a non-loopback address, and a successful run with no network namespace. The segmenter alone still makes 0 network calls.
+
+**11.8 Result on the corpus** [M], 2026-11-26 at 10:20–10:23Z, under `NetworkGuard` (0 violations); the corpus at `5c288080…` with the same HEAD and an empty `git status` before and after.
+
+| Finding | Value |
+|---|---|
+| Documents → nodes | 88 → 658. By strategy: syntactic 32 → 279, markdown 46 → 340, config 10 → 39. By language: python 279, markdown 340, yaml 29, toml 4, dockerfile 4, makefile 2 |
+| Nodes by kind | `section` 340, `function` 179, `module_block` 71, `config_block` 39, `class` 22, `method` 6, `class_header` 1 |
+| Forced | 176: `section` 77, `function` 64, `config_block` 22, `module_block` 8, `method` 5 |
+| Fallback reasons, syntax errors, degraded files, documents without nodes | `no_parser` 56; 0; 0; 0 |
+| Node size (characters) | p50 683, p90 1,439, max 1,500 (nearest-rank); longest embedding input 1,683 characters; longest `symbol` 120 |
+| Invariants | 0 violations (I1–I8 for Python; I1–I4, I6, I8, F1, F2 for the fallbacks). Every node is the exact slice with exact lines; IDs unique; two runs identical; round trip keeps every hash; 0 nodes share a hash |
+| No regression on Python | 279 nodes (`function` 179, `module_block` 71, `class` 22, `method` 6, `class_header` 1), 77 forced, p50/p90/max 515/1,454/1,498 with the section 10.5 method |
+| Time | `chunk_documents` on the 88 documents: 62–130 ms over 5 runs (grammar loaded); Phase 6 pays this at every start-up, on top of the 6–16 ms load |
+| Embedder headroom [E] | 1,683 characters ≈ 842 tokens at a conservative 2 characters per token, about 41% of the 2,048-token limit |
+
+**11.9 Known limitations and risks for Phases 3–4**
+
+| Item | Effect |
+|---|---|
+| IDs follow offsets | Any edit above a span changes its ID. Re-indexing a file must delete its nodes by `ref_doc_id` first (Phase 3) |
+| Equal hashes | Two forced pieces with the same text on the same line share a hash (different IDs), and fusion would collapse them (0 in the corpus; P4 adds no key) |
+| `None` in metadata | LlamaIndex's flat check accepts `None`; this contract never emits it (keys are omitted) |
+| BM25 [H] | What `BM25Retriever` indexes (text only, or visible metadata too) is not verified: the package is not installed |
+| Markdown | Setext headings under a list item, HTML blocks and indented code are approximated; a heading path over 120 characters is trimmed from the left |
+| Configuration | No YAML, TOML or Make parser: anchors, flow collections spanning lines and Dockerfile `escape` directives are handled as plain lines |
+| Start-up cost | 62–130 ms per start-up on this corpus, linear in repository size |
 
 ## Appendix: Evidence and reproduction
 
@@ -744,6 +876,8 @@ Blind splitting violates them: `naive_line_split` every 4 lines (the doc's Step 
 | P4 | `make test-corpus` (`pytest -m integration -rs tests/test_ingestion_corpus_integration.py`) | The key test (9.6). `make test-integration` also runs it, together with the two Phase 0 tests that need Ollama |
 | S1 | From a new `mktemp -d` folder, with `HOME`, `XDG_CACHE_HOME` and `TMPDIR` set to an empty directory: a script that imports `src.ingestion.segmenter`, loads the grammar and segments a synthetic text, run with `strace -f -qq -e trace=network -o <log> .venv/bin/python -I -B <script> <repo>` and with `bwrap --ro-bind / / --dev /dev --proc /proc --bind <dir> <dir> --unshare-net .venv/bin/python -I -B <script> <repo>` | Section 10.4: no network system calls, works with no network, writes nothing |
 | S2 | From a new `mktemp -d` folder: a script that loads the corpus with the loader, segments the `python` documents and runs `tests/chunking_invariants.py`, under `NetworkGuard`, via `PYTHONPATH=<repo>:<repo>/tests uv run --locked --offline python <script> <corpus>` | Section 10.5 |
+| S3 | As S1, with a script that runs `chunk_documents_with_report` on synthetic documents of every strategy, reads every `MetadataMode` view and round-trips each node through `node_to_metadata_dict` | Section 11.7: works with no network namespace; the only network calls are urllib3's loopback IPv6 probe |
+| S4 | `make chunk CHUNK_FLAGS="--repo ~/repos/project-to-index --json"`, then a `mktemp -d` script that runs every strategy's checkers on the 88 documents, under `NetworkGuard`, via `PYTHONPATH=<repo>:<repo>/tests uv run --locked --offline python <script> <corpus>` | Section 11.8 |
 
 C3 is a stdlib-only script, not versioned in this repository, and imports no networking modules. It does not follow symlinks and handles paths as bytes. Per file it records:
 - a binary flag (NUL byte in the first KiB), lines as `count("\n") + 1`, and UTF-8 validity;

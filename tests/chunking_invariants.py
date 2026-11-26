@@ -278,3 +278,146 @@ def naive_char_split(text: str, chars: int) -> tuple[Span, ...]:
         if span is not None:
             spans.append(span)
     return tuple(spans)
+
+
+# --- Step 5 (appended): invariants of the fallback strategies -------------------------------
+#
+# Every strategy keeps I1-I4, I6 and I8. Two more, for Markdown and configuration:
+# * F1 natural units whole: a fenced code block or a top-level configuration block that
+#   fits within the cap is never split across spans.
+# * F2 forced only where needed: a forced span overlaps a natural unit (section, block,
+#   fence) or a line that does not fit.
+# Their oracles below are deliberately simple scanners, independent of the splitters.
+
+
+def check_shared(
+    text: str, segmentation: Segmentation, cap: int, rerun: Callable[[], Segmentation]
+) -> list[Violation]:
+    """I1-I4, I6 and I8: what every strategy guarantees."""
+    spans = segmentation.spans
+    return (
+        check_bounds(text, spans)
+        + check_order(spans)
+        + check_coverage(text, spans)
+        + check_line_boundaries(text, spans, cap)
+        + check_cap(text, spans, cap)
+        + check_deterministic(rerun)
+    )
+
+
+def check_units_whole(
+    text: str, spans: Sequence[Span], regions: Sequence[tuple[int, int]], cap: int
+) -> list[Violation]:
+    """F1."""
+    return [
+        Violation("F1", f"unit [{a}, {b}) fits ({b - a} <= {cap}) but is split")
+        for a, b in regions
+        if b - a <= cap and not any(s.start <= a and b <= s.end for s in spans)
+    ]
+
+
+def check_forced_where_needed(
+    text: str, spans: Sequence[Span], regions: Sequence[tuple[int, int]], cap: int
+) -> list[Violation]:
+    """F2."""
+    index = _LineIndex(text)
+    lines = [(index.starts[i], index.content_ends[i]) for i in range(len(index.starts))]
+    too_big = [(a, b) for a, b in list(regions) + lines if b - a > cap]
+    return [
+        Violation("F2", f"forced span at {s.start} but everything around it fits")
+        for s in spans
+        if s.forced and not any(a < s.end and s.start < b for a, b in too_big)
+    ]
+
+
+def _regions(text: str, starts: list[int]) -> list[tuple[int, int]]:
+    """Regions from each start row to the row before the next one, content-trimmed."""
+    index = _LineIndex(text)
+    regions = []
+    for k, start in enumerate(starts):
+        last = (starts[k + 1] - 1) if k + 1 < len(starts) else len(index.starts) - 1
+        while last > start and index.content_ends[last] == index.starts[last]:
+            last -= 1
+        regions.append((index.starts[start], index.content_ends[last]))
+    return regions
+
+
+def _fence_rows(text: str) -> list[tuple[int, int]]:
+    """(first row, last row) of every fenced code block; unclosed ones run to the end."""
+    lines = text.split("\n")
+    blocks: list[tuple[int, int]] = []
+    opener: tuple[int, str, int] | None = None  # row, fence character, run length
+    for row, line in enumerate(lines):
+        stripped = line.strip()
+        char = stripped[:1]
+        run = len(stripped) - len(stripped.lstrip(char)) if char in {"`", "~"} else 0
+        if opener is None and run >= 3:
+            opener = (row, char, run)
+        elif opener is not None and char == opener[1] and run == len(stripped) >= opener[2]:
+            blocks.append((opener[0], row))
+            opener = None
+    if opener is not None:
+        blocks.append((opener[0], len(lines) - 1))
+    return blocks
+
+
+def fence_regions(text: str) -> list[tuple[int, int]]:
+    """Character ranges of the fenced code blocks."""
+    index = _LineIndex(text)
+    regions = []
+    for first, last in _fence_rows(text):
+        while last > first and index.content_ends[last] == index.starts[last]:
+            last -= 1
+        regions.append((index.starts[first], index.content_ends[last]))
+    return regions
+
+
+def markdown_section_regions(text: str) -> list[tuple[int, int]]:
+    """Sections at ATX headings outside fences (setext headings ignored: a coarser oracle)."""
+    fenced = {row for first, last in _fence_rows(text) for row in range(first, last + 1)}
+    starts = [0]
+    for row, line in enumerate(text.split("\n")):
+        stripped = line.lstrip(" ")
+        is_heading = stripped.startswith("#") and stripped.lstrip("#")[:1] in {" ", ""}
+        if is_heading and row not in fenced:
+            starts.append(row)
+    return _regions(text, sorted(set(starts)))
+
+
+def config_top_regions(text: str, label: str) -> list[tuple[int, int]]:
+    """Top-level blocks of a configuration file, by a column-0 rule per dialect."""
+    lines = text.split("\n")
+    starts: list[int] = []
+    in_string = False
+    for row, line in enumerate(lines):
+        previous = lines[row - 1].rstrip() if row else ""
+        if label == "toml":
+            if not in_string and line.startswith("["):
+                starts.append(row)
+            in_string ^= line.count('"""') % 2 == 1
+        elif line[:1] not in {"", " ", "\t", "#"}:
+            continued = label in {"dockerfile", "makefile"} and previous.endswith("\\")
+            if not continued:
+                starts.append(row)
+    if not starts:
+        return []
+    # Column-0 comments belong to the block below them (the agreed policy): a block starts
+    # at the comment run directly above it and ends at its last non-comment line.
+    comment = [line.startswith("#") for line in lines]
+    blank = [not line.strip() for line in lines]
+    firsts = []
+    for k, start in enumerate(starts):
+        row, first = start - 1, start
+        lower = starts[k - 1] + 1 if k else 0
+        while row >= lower and (blank[row] or comment[row]):
+            first = row if comment[row] else first
+            row -= 1
+        firsts.append(first)
+    index = _LineIndex(text)
+    regions = []
+    for k, first in enumerate(firsts):
+        last = (firsts[k + 1] - 1) if k + 1 < len(firsts) else len(lines) - 1
+        while last > first and (blank[last] or comment[last]):
+            last -= 1
+        regions.append((index.starts[first], index.content_ends[last]))
+    return regions

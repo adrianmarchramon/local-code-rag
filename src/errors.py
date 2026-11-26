@@ -86,3 +86,13 @@ class ParserUnavailableError(ChunkingError):
     Grammars ship compiled inside their wheels (decision P1) and are never downloaded, so
     this means the virtual environment does not match ``uv.lock``: run ``make install``.
     """
+
+
+class InvalidDocumentError(ChunkingError):
+    """A document handed to the chunker breaks the loader's contract.
+
+    Node IDs are derived from ``doc_id``, so a document without the loader's six metadata
+    keys, with ``doc_id != file_path`` (for example a ``Document`` created without ``id_``,
+    which gets a random UUID) or a repeated ``doc_id`` would produce nodes that change from
+    run to run. Build documents with ``src.ingestion.loader.load_repository``.
+    """

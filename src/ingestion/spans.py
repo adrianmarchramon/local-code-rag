@@ -26,6 +26,10 @@ class SpanKind(StrEnum):
     METHOD = "method"  # a method of a class that did not fit, or a forced fragment of one
     CLASS_BLOCK = "class_block"  # class-body statements between or after its methods
     MODULE_BLOCK = "module_block"  # contiguous module-level code outside definitions
+    # --- Step 5 fallbacks (appended) ---
+    SECTION = "section"  # a Markdown section (or a forced piece of one)
+    CONFIG_BLOCK = "config_block"  # whole configuration blocks (YAML, TOML, Docker, Make)
+    TEXT_BLOCK = "text_block"  # blank-line separated blocks of generic text
 
 
 @unique

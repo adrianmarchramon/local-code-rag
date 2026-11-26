@@ -55,6 +55,15 @@ INGEST_FLAGS ?=
 ingest: ## Load REPO_PATH with the Phase 1 filters and print the report (offline, read-only)
 	$(UV_RUN) python -m src.ingestion.loader $(INGEST_FLAGS)
 
+# --- Chunking (Phase 2, Step 6) --------------------------------------------------------
+# Read-only and offline: loads REPO_PATH (or --repo), chunks it and prints the report.
+# --list prints symbols and --show prints file content: run them in your own terminal.
+# Examples: make chunk CHUNK_FLAGS="--json"; make chunk CHUNK_FLAGS="--show src/app.py"
+CHUNK_FLAGS ?=
+.PHONY: chunk
+chunk: ## Chunk REPO_PATH with the Phase 2 strategies and print the report (offline, read-only)
+	$(UV_RUN) python -m src.ingestion.chunker $(CHUNK_FLAGS)
+
 # --- Phase 1 key test (Step 7) ------------------------------------------------------------
 # Only the corpus key test, not the Ollama integration tests: offline and read-only. It skips,
 # with the reason, if REPO_PATH is missing or its HEAD is not the frozen commit.
