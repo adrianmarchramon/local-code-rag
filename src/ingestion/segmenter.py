@@ -265,9 +265,33 @@ class _Segmenter:
             spans.append(self.span(item.first, item.last, kind, False, path))
             return spans
         if not is_class:
-            units = comment_units + self.split_units(_Unit(item.first, item.last, node))
-            return spans + self.pack(units, kind, path, forced=True)
+            units = self.split_units(_Unit(item.first, item.last, node))
+            return spans + self.forced_with_comments(
+                comment_units, units, item.first, kind, path, block_kind, prefix
+            )
         return self.big_class(item, node, comment_units, path, block_kind, prefix)
+
+    def forced_with_comments(
+        self,
+        comment_units: list[_Unit],
+        units: list[_Unit],
+        first_row: int,
+        kind: SpanKind,
+        path: tuple[str, ...],
+        block_kind: SpanKind,
+        prefix: tuple[str, ...],
+    ) -> list[Span]:
+        """A forced split of a definition, its leading comments kept with its first part.
+
+        When the comments cannot share a span with that first part they get their own
+        unforced block span (no name), as when they would push a fitting definition over
+        the cap: a comment-only chunk is neither part of the definition nor forced.
+        """
+        combined = self.pack(comment_units + units, kind, path, forced=True)
+        if comment_units and combined[0].end <= self.lines.starts[first_row]:
+            comments = self.pack(comment_units, block_kind, prefix, forced=False)
+            return comments + self.pack(units, kind, path, forced=True)
+        return combined
 
     def big_class(
         self,
@@ -303,7 +327,17 @@ class _Segmenter:
             spans.append(self.span(item.first, header_last, SpanKind.CLASS_HEADER, False, path))
         else:
             header = self.split_units(_Unit(item.first, header_last, node), stop=header_last)
-            spans.extend(self.pack(comment_units + header, SpanKind.CLASS_HEADER, path, True))
+            spans.extend(
+                self.forced_with_comments(
+                    comment_units,
+                    header,
+                    item.first,
+                    SpanKind.CLASS_HEADER,
+                    path,
+                    parent_block_kind,
+                    prefix,
+                )
+            )
         return spans + self.emit(rest, path, in_class=True)
 
     def element_first(self, element: _Element) -> int:
