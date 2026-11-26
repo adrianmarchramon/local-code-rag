@@ -43,12 +43,12 @@ from typing import Final
 import tree_sitter
 
 from src.errors import InvalidChunkingRulesError
+from src.ingestion.lines import LineIndex, character_pieces
 from src.ingestion.parser_registry import GrammarSpec, new_parser
 from src.ingestion.spans import ParseStatus, Segmentation, Span, SpanKind
 
 logger = logging.getLogger(__name__)
 
-_NEWLINE: Final = re.compile("\n")
 # PEP 263 encoding declaration (only meaningful on the first two lines).
 _ENCODING: Final = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*[-\w.]+")
 
@@ -93,42 +93,9 @@ class _Definition:
 _Element = _Definition | tuple[_Item, ...]  # a definition, or a block of plain items
 
 
-class _Lines:
-    """Line index of the text: rows split on ``\\n`` only, as tree-sitter counts them."""
-
-    def __init__(self, text: str) -> None:
-        self.text = text
-        starts: list[int] = []
-        content_ends: list[int] = []
-        blank: list[bool] = []
-        position = 0
-        for row in text.split("\n"):
-            content = row.rstrip()
-            starts.append(position)
-            content_ends.append(position + len(content))
-            blank.append(not content)
-            position += len(row) + 1
-        self.starts: Final = tuple(starts)
-        self.content_ends: Final = tuple(content_ends)
-        self.blank: Final = tuple(blank)
-
-    def row(self, row: int) -> str:
-        return self.text[self.starts[row] : self.content_ends[row]]
-
-    def size(self, first: int, last: int) -> int:
-        """Characters of the span covering rows ``first..last``."""
-        return self.content_ends[last] - self.starts[first]
-
-    def trim(self, first: int, last: int) -> int:
-        """``last`` moved up past trailing blank rows (never above ``first``)."""
-        while last > first and self.blank[last]:
-            last -= 1
-        return last
-
-
 class _Segmenter:
     def __init__(self, text: str, source: bytes, spec: GrammarSpec, max_chars: int) -> None:
-        self.lines = _Lines(text)
+        self.lines = LineIndex(text)
         self.source = source
         self.spec = spec
         self.cap = max_chars
@@ -416,29 +383,8 @@ class _Segmenter:
 
     def characters(self, row: int, kind: SpanKind, path: tuple[str, ...]) -> list[Span]:
         """Last resort for one line over the cap: pieces broken after a word if possible."""
-        text = self.lines.text
-        position, end = self.lines.starts[row], self.lines.content_ends[row]
-        while text[position].isspace():
-            position += 1
-        spans: list[Span] = []
-        while position < end:
-            if end - position <= self.cap:
-                spans.append(Span(position, end, kind, True, path))
-                break
-            limit = position + self.cap
-            cut = next(
-                (
-                    k
-                    for k in range(limit, position, -1)
-                    if text[k].isspace() and not text[k - 1].isspace()
-                ),
-                limit,
-            )
-            spans.append(Span(position, cut, kind, True, path))
-            position = cut
-            while position < end and text[position].isspace():
-                position += 1
-        return spans
+        pieces = character_pieces(self.lines, row, self.cap)
+        return [Span(start, end, kind, True, path) for start, end in pieces]
 
     def span(
         self, first: int, last: int, kind: SpanKind, forced: bool, path: tuple[str, ...]
