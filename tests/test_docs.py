@@ -6,14 +6,17 @@ DEFAULT_* constants do not depend on environment variables. Hygiene: no absolute
 paths. `TODO(user)` markers are allowed. Phase 1: every discard reason, every language label,
 the frozen corpus commit and the expected totals are named. Phase 2: the installed tree-sitter
 versions, every span kind and the chunk cap are named; Steps 3-6: every strategy, every
-fallback reason and the node-ID namespace are named.
+fallback reason and the node-ID namespace are named; Step 7: the chunk manifest's path, corpus
+digest and totals are named, read from the manifest itself.
 """
 
+import json
 import re
 from importlib.metadata import version
 from pathlib import Path
 
 import pytest
+from chunk_manifest import MANIFEST_PATH as CHUNK_MANIFEST_PATH
 from corpus_manifest import FROZEN_CORPUS_SHA
 
 from src import config
@@ -37,6 +40,7 @@ REQUIRED_H2 = (
     "## 9. Phase 1 — Languages, tests and closure (Steps 6\u20137)",  # \u2013: en dash
     "## 10. Phase 2 — Syntax-aware chunking (Steps 1\u20132)",  # \u2013: en dash
     "## 11. Phase 2 — Metadata, fallbacks and the chunker (Steps 3\u20136)",  # \u2013: en dash
+    "## 12. Phase 2 — Step 7 and closure",
 )
 USER_PATH = re.compile(r"/home/[^/\s]+|/Users/[^/\s]+|[A-Za-z]:\\Users\\", re.IGNORECASE)
 
@@ -108,3 +112,15 @@ def test_document_names_every_strategy_and_fallback_reason(code: str) -> None:
 
 def test_document_names_the_node_id_namespace() -> None:
     assert str(NODE_ID_NAMESPACE) in "\n".join(_doc_lines())
+
+
+def test_document_names_the_chunk_manifest_and_its_figures() -> None:
+    text = "\n".join(_doc_lines())
+    manifest = json.loads(CHUNK_MANIFEST_PATH.read_text(encoding="utf-8"))
+    report = manifest["report"]
+
+    assert "`tests/fixtures/chunk_manifest.json`" in text
+    assert manifest["corpus"]["commit"] in text
+    assert manifest["digest"]["corpus"] in text
+    assert f"{report['documents']} \u2192 {report['nodes']} nodes" in text  # \u2192: arrow
+    assert f"{report['forced']} forced" in text

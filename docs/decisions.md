@@ -6,6 +6,7 @@
 | 2026-11-25 | 1: Ingestion (Steps 1–7) | Filters, loader, metadata, languages, tests and the key test (sections 7–9). Phases 2+ are planned, not built. |
 | 2026-11-25 | 2: Chunking (Steps 1–2) | Coherence invariants, parser registry and segmenter (section 10). Steps 3–7 and Phases 3+ are planned, not built. |
 | 2026-11-26 | 2: Chunking (Steps 3–6) | Dispatch, nodes, fallbacks, chunker, report and CLI (section 11). Step 7 and Phases 3+ are planned, not built. |
+| 2026-11-26 | 2: Chunking (Step 7 and closure) | Tests, key test, review and closure (section 12). Phase 2 is closed; Phases 3+ are planned, not built. |
 
 ## 0. How to read this document
 
@@ -683,7 +684,7 @@ Blind splitting violates them: `naive_line_split` every 4 lines (the doc's Step 
   - A header (decorators, `def`/`class`/`if`… line) keeps its first part.
   - What still does not fit steps down to statements and clauses, then lines, then characters.
   - `forced` marks the split of a function, method, class header, statement or line. It lives on the span, never in node metadata (P4: no extra keys).
-- **Comments:** leading comments that would push a fitting definition over the cap get their own span; the definition is not split.
+- **Comments:** leading comments that would push a fitting definition over the cap get their own span; the definition is not split. Since Step 7, the same holds when they cannot share a span with the first part of a split definition (section 12.1).
 - **Parsers:**
   - `GrammarSpec` holds node types and field names as data; every declared type is checked against the installed grammar.
   - A label without an entry returns no parser as a value; a registered grammar that cannot load raises `ParserUnavailableError` (run `make install`).
@@ -854,6 +855,178 @@ A test fails when the loader emits a label that is in neither the registry nor t
 | Configuration | No YAML, TOML or Make parser: anchors, flow collections spanning lines and Dockerfile `escape` directives are handled as plain lines |
 | Start-up cost | 62–130 ms per start-up on this corpus, linear in repository size |
 
+## 12. Phase 2 — Step 7 and closure
+
+Step 7 asks for tests showing that a function is not split and that the metadata is correct. The Definition of Done's key test asks whether the chunks of a real repository are meaningful units, not cuts in the middle of a line [D: rag_phase2.md Step 7, Verification]. This project answers with five pieces of work:
+- the doc's three tests rewritten at node level, each with a negative control;
+- an automated key test against a versioned manifest (P6);
+- a smoke test on a second codebase;
+- a structural review of every corpus chunk;
+- one fix in `src/`, found by the smoke test.
+
+Code: `tests/chunk_validation.py` (content-free validation), `tests/chunk_manifest.py` (manifest), `tests/fixtures/chunk_manifest.json`, `tests/test_chunking_corpus_integration.py` (key test) and `src/ingestion/segmenter.py` (the fix).
+
+**12.1 Decisions**
+
+| ID | Decision | Source |
+|---|---|---|
+| G4-Q1 | Manifest = the `ChunkReport` + one row per document: path, strategy, nodes, forced spans, and a digest of its (ID, hash) pairs | [U] 2026-11-26 |
+| G4-Q2 | Review sample: stratified and deterministic (10–14 files planned), plus `--list` of every node. The result has 9 files, because two criteria fell on files already chosen | [U] 2026-11-26 |
+| G4-Q3 | Fix only demonstrated defects; anything merely improvable becomes a Phase 7 experiment | [U] 2026-11-26 |
+| G4-Q4 | Second codebase = this repository: invariants and `--json` aggregates only, no downloads | [U] 2026-11-26 |
+| G4-policies | Approved as listed:<br>• The manifest is compared by exact equality: UTF-8, LF, canonical JSON, versions and regeneration command included.<br>• The key test carries the `integration` marker. It skips only when `REPO_PATH` is missing or its HEAD is not the frozen commit; a modified tree fails.<br>• Failures are content-free.<br>• `make test-corpus` runs both key tests.<br>• Tokens are not measured with Ollama (11.8 [E]) | [U] 2026-11-26 |
+| Step 7 fix | Leading comments that cannot share a span with the first part of a split definition (a function, or a class header) get their own unforced block span, with no `symbol`. This extends the 10.3 comment rule. Before the fix, the smoke test found a comment-only chunk that was forced and carried the function's `symbol` (I7). The case was reproduced synthetically (2 tests) and the fix approved. Corpus: 0 such cases; the manifest is unchanged | [U] 2026-11-26; [M] |
+| DoD #5 | The owner asked the agent to do the review ("try it yourself"). After the warning that reading chunks would send corpus content off the machine and change P6, the owner chose a content-free review by the agent. Asked to confirm, the owner answered "check it yourself". Recorded as judged by the agent, on the structural review of 12.5, delegated by the owner. No corpus content left the machine. P6 is satisfied as: invariants, manifest and the delegated structural review | [U] 2026-11-26 |
+
+**12.2 Tests (Step 7).** In `tests/test_chunking.py`: 317 tests (275 at the end of Steps 3–6).
+
+| Doc test | Here | Why it is not vacuous |
+|---|---|---|
+| `test_function_stays_whole` (substring checks) | `test_each_function_is_one_node_with_its_whole_source`: a decorated, an `async` and an over-the-cap function. Each function is exactly one node whose text is its whole source, or, when over the cap, consecutive forced pieces that cover it | The same assertions fail for a whole-file "chunker" and for `naive_line_split` every 4 lines (a negative test) |
+| `test_extracts_symbol_name` (`extract_symbol_name` does not exist here) | `test_symbols_on_nodes_for_every_kind_of_unit` (function, class, method, nested method, Markdown heading paths) and `test_nodes_without_a_name_have_no_symbol_key` (module code, YAML, Go) | It checks the exact `symbol` on the nodes Phase 5 cites, and checks that the key is absent rather than empty |
+| `test_metadata_inherited_and_enriched` (key presence) | `test_metadata_is_inherited_exactly_and_enriched_with_exact_lines` | Exact values of the six inherited keys and exact `start_line`/`end_line`, checked against the lines' text |
+
+The key-test helpers have their own synthetic tests, which need no corpus:
+- **Manifest reader:** strict, with 12 malformed cases (BOM, CRLF, no final newline, invalid JSON, keys, format, counts, strategy, digest, row keys, empty list, corpus digest); each message says how to regenerate. A non-canonical file is rejected.
+- **Comparison:** by field, by path (missing or extra) and by order.
+- **Digests:** the written digest definition, and a golden digest of a synthetic repository.
+- **Validator:** detects 9 kinds of tampering, duplicates and degraded files, and its findings never carry text or symbols.
+- **Helpers:** the review sample is deterministic; the tree snapshot sees a change.
+- **Sentinel test:** a validation failure is forced in a `pytest` subprocess, and the sentinel planted in the chunked text does not appear in its output.
+
+`make check`: 1,110 passed, 19 deselected (1,066 before Step 7).
+
+**12.3 Key test (P6).** `tests/test_chunking_corpus_integration.py`, marker `integration`, 8 tests. `make test-corpus` now runs both key tests (17 tests, offline, no Ollama, about 2 s); `make test` does not collect them. The module chunks the corpus once, under its own `NetworkGuard`, and snapshots the tree before and after. Its tests check:
+- **Manifest:** the run equals the manifest: strict parse, comparison by field and by path, and byte-identical file text.
+- **Documents:** the documents are the Phase 1 manifest's files, with their labels.
+- **Validation:** 0 findings over the 658 nodes:
+  - strategy invariants, exact slices and offsets;
+  - key order and types, visibility, relationship, recomputed UUID5 IDs;
+  - lines against an independent oracle, the vector-store round trip;
+  - unique IDs and hashes, order.
+- **Splits:** of 188 Python definitions, 33 exceed the cap, and exactly those 33 are split; 0 definitions that fit are split.
+- **Report:** 0 degraded files, 0 syntax errors; 88 → 658 nodes, 176 forced; by strategy, syntactic 279, markdown 340, config 39.
+- **Determinism:** two runs are identical, and another process with `PYTHONHASHSEED=12345` gives the same corpus digest.
+- **Privacy:** the corpus tree is unchanged and the guard saw 0 violations.
+
+Failures are content-free:
+- Assertions compare records (code, path, offsets, lines, length, kind), counts and digests, never corpus strings.
+- I5 and I7 are re-implemented without definition names.
+- Never run the key test with `-vv`, `-l` or `--showlocals`.
+
+| Manifest field | Value |
+|---|---|
+| File | `tests/fixtures/chunk_manifest.json`, 21,008 B, UTF-8, LF, canonical 2-space JSON, format `local-code-rag/chunk-manifest/1` |
+| Corpus | `5c288080c88f0bfec435af0093a5155baaf7f343` |
+| Rules | `max_chunk_chars` 1500 |
+| Versions | `tree-sitter` 0.26.1, `tree-sitter-python` 0.25.0, `llama-index-core` 0.14.26 (the node hash is LlamaIndex's) |
+| Digest | Document: sha256 of the lines `<node id>:<node hash>`, in order. Corpus: sha256 of the lines `<path>:<document digest>`. Corpus digest `0ddc4d1ae608b2e92a3e6840a2d5fdd6d6fd0b3e9961b4c4d284c82f982444cd` |
+| Rows | 88 (path, strategy, nodes, forced, digest), in loader order; the row sums equal the report |
+| Regeneration | Only after an owner decision that changes the chunks (Appendix S5) |
+
+Before it was versioned, the manifest was accepted by an independent script, under `NetworkGuard`, with 0 violations. The script checked that:
+- HEAD is the frozen commit;
+- the manifest equals a fresh run;
+- paths and languages equal `tests/fixtures/corpus_manifest.tsv`;
+- the rows cover every document, in order, and their sums equal the report;
+- the content-free validation gives 0 findings;
+- the split counts are as above.
+
+**12.4 Second codebase** [M], 2026-11-26. This repository's working tree, Step 7 work included, under `NetworkGuard` (0 violations). These figures move with the repository; they are not a regression baseline.
+
+| Finding | Value |
+|---|---|
+| Documents → nodes | 70 → 1,201. By strategy: syntactic 65 → 1,097, markdown 2 → 97, config 3 → 7 |
+| Forced; reasons | 182; `no_parser` 5 |
+| Syntax errors, degraded files, documents without nodes | 0; 0; 0 |
+| Node size (characters) | p50 390, p90 1,265, max 1,498; longest embedding input 1,632 |
+| Definitions | 993 (`ast`, any depth); 43 over the cap; exactly those 43 split |
+| Content-free validation | 1 finding (I7) before the Step 7 fix, 0 after |
+| Time | 87 ms |
+
+**12.5 Review of the chunks (DoD #5)** [M], 2026-11-26.
+- **Sample.** `review_sample` picked 9 files: 96 nodes, 51 of them forced.
+  - Python with the most forced spans: `src/models/register.py`. It also holds the only split class.
+  - Python with the most module blocks: `src/config.py`.
+  - Markdown with the most nodes: `README.md`, the root README.
+  - Markdown with the most forced spans: `docs/decisions/README.md`.
+  - Markdown with the most code fences: `docs/decisions/0029-cd-workflow-and-ghcr-publication.md`.
+  - One file per configuration format: `docker/Dockerfile`, `Makefile` and `pyproject.toml`.
+  - YAML with the most forced spans: `.github/workflows/cd.yml`.
+- **Owner's procedure.** Appendix S6. The commands were tested on a synthetic repository; the owner did not run them (12.1, DoD #5).
+- **Structural review.** All 658 nodes were checked against independent oracles: `ast` for Python, and headings, blank lines and column 0 for the other strategies. The script printed counts and records only.
+
+| Strategy | Whole chunks at a boundary | Forced pieces starting at a boundary | Forced pieces starting inside a unit |
+|---|---|---|---|
+| Python | 202 of 202. Each starts at a definition, decorator, statement or comment and ends at a statement's end | 69 of 77 | 8. Each is a line-level split of a docstring longer than the cap |
+| Markdown | 263 of 263 start at a heading or are the preamble | 59 of 77 start at a heading or after a blank line | 18. Each starts at a text line (11), a list item (4) or a table row (3) inside a blank-line block longer than the cap |
+| Configuration | 17 of 17 start at column 0, a nested key or list item, or a comment | 22 of 22 | 0 |
+
+Between consecutive chunks there are 0 non-whitespace gaps. No Python definition lacks its `symbol`, and no configuration chunk has one. Every cut inside a unit falls on a unit that does not fit, as G1-Q3 requires.
+- **Verdict:** ✔, judged by the agent under the owner's delegation. Not covered: whether each chunk is semantically useful for retrieval. Phase 7 measures that.
+
+**12.6 Definition of Done → evidence**
+
+| # | DoD item [D: rag_phase2.md, Verification] | Evidence | Status |
+|---|---|---|---|
+| 1 | `chunker.py` chunks code in a syntax-aware manner, by language, using tree-sitter (via `tree-sitter-language-pack`) | `tree-sitter` with the Python grammar wheel, no language pack (P1, P5). Segmenter (10.3), dispatch (11.2), 279 syntactic nodes, I1–I8 with 0 violations (12.3) | ✔ (deviation: Python only, no language pack) |
+| 2 | Each chunk inherits the source file and is enriched with the symbol and line range | Node contract (11.3); 12.2; 0 findings for keys, inheritance, lines, line text and the round trip over 658 nodes | ✔ |
+| 3 | A fallback guarantees coverage for languages without a parser and for large chunks | Fallbacks (11.4): 56 `no_parser` documents → 379 nodes. 0 gaps (I3), forced splits over the cap (I6, F2), 0 degraded files; `segmentation_failed` is tested | ✔ |
+| 4 | The tests verify that functions are not split and that the metadata is correct | 12.2: the doc's three tests at node level, with negative controls; `make check` 1,110 passed | ✔ |
+| 5 | Key test: the chunks are meaningful units (a complete function, a complete class), not cuts in the middle of a line | Automated (12.3); structural review of all 658 nodes (12.5) | ✔ (delegated, structural) |
+
+**12.7 Deviations from rag_phase2.md (Steps 1–7, consolidated)**
+
+| Step | Doc | This project | Where |
+|---|---|---|---|
+| 1 | Blind splitting shown by example | Executable invariants I1–I8, each with a negative test | 10.2 |
+| 2 | `tree-sitter-language-pack`; `CodeSplitter(chunk_lines=40, chunk_lines_overlap=15, max_chars=1500)` | `tree-sitter` + `tree-sitter-python` wheels; own segmenter; cap 1500; no overlap | 10.1 (P1, P2) |
+| 2–3 | 8 syntax-aware languages; documents grouped by language | `python` only; per-document dispatch in input order | P5; 11 |
+| 4 | `extract_symbol_name` re-parses; `end_line` omitted when missing; default `uuid4` IDs; the inherited metadata dict | `symbol` from the name path; lines always present; UUID5; a fresh dict per node, in a fixed key order | 11.3 |
+| 5 | `SentenceSplitter(512, 50)` for everything else | Own Markdown, configuration and generic text splitters | 11.4 |
+| 6 | `except Exception` degrades a whole language; `print` | Per-file degradation (`RecursionError`, `ValueError`); a CLI with JSON logs | 11.1 (G3-Q5) |
+| 7 | The three tests (substring checks, a nonexistent function, key presence) | Node-level tests with negative controls | 12.2 |
+| 7 | `Document` without `id_` | Rejected with `InvalidDocumentError`; tests set `id_` | 11 |
+| 7 | All tests run with `make test` | Synthetic tests in `make test`; the corpus key test in `make test-corpus` | 12.3 |
+| DoD | "Inspect the chunks" by eye | Exact manifest, content-free validation and a structural review | 12.3, 12.5 |
+
+**12.8 Known limitations (Phase 2, consolidated)**
+
+| Item | Effect |
+|---|---|
+| Python only | Other code languages get the generic text splitter (P5) |
+| tree-sitter is lenient | A stray indent parses cleanly; an `ERROR` node can swallow the code after it, which then becomes module code (10.6) |
+| Units over the cap | They are cut at lines (26 corpus pieces start inside a docstring, a paragraph, a list item or a table) or, beyond that, at characters |
+| Markdown and configuration | Approximated without parsers: setext headings under list items, HTML blocks, indented code, YAML anchors, flow collections, Dockerfile `escape` (11.9) |
+| IDs follow offsets | Any edit above a span changes its ID (11.9) |
+| Equal hashes | Two identical forced pieces on one line share a hash (0 in the corpus) |
+| Manifest | Tied to `tree-sitter`, `tree-sitter-python` and `llama-index-core` (whose node hash it uses). Upgrading any of them, or changing a chunking rule, needs an owner decision and a regeneration (S5) |
+| Review | Structural, not semantic (12.5) |
+| Recursion and cost | Very deep nesting could reach the recursion limit; 62–130 ms per chunking of the corpus, linear in size |
+
+**12.9 Risks for Phases 3–8.** A read-only audit of the contract against the phase documents.
+
+| Phase | What it consumes | Risk | Recommendation |
+|---|---|---|---|
+| 3 | `VectorStoreIndex(nodes)` on a persistent Chroma collection [D: rag_phase3.md Steps 4–5] | IDs change when offsets move (R11: `doc_id` is unique per repository only) | Delete a file's nodes by `ref_doc_id` before re-indexing it; prefix IDs if several repositories share a collection. Qdrant accepts UUID IDs [H] |
+| 4 | `BM25Retriever.from_defaults(nodes=...)`; `QueryFusionRetriever(mode="reciprocal_rerank")`; a `MetadataFilter` on the vector retriever only [D: rag_phase4.md Steps 2, 4] | The `language` filter does not reach BM25; fusion deduplicates by `hash` (0 shared in the corpus); what BM25 indexes is [H]; R10 (`directory` `EQ` excludes subdirectories) | Filter BM25 results by the same metadata; verify BM25's indexed text once the package is installed |
+| 5 | `format_context` wraps `node.get_content()` in a triple-backtick fence and cites `symbol` and lines [D: rag_phase5.md Step 2] | 35 corpus nodes (all Markdown) contain a triple-backtick fence and would close the prompt's fence early | Use a fence longer than any backtick run in the chunk, or `~~~` |
+| 6 | `lifespan` re-chunks the repository for BM25 and reloads the persisted index [D: rag_phase6.md Step 2] | If the repository changed since indexing, BM25 nodes and stored vectors diverge; R12 (`/index` takes a client path) | Store the corpus digest with the index, compare it at start-up, and refuse or re-index on a mismatch |
+| 7 | `retrieved_contexts` = `get_content()` per node [D: rag_phase7.md Step 5] | R13: answers not tied to a corpus version | Record the corpus commit and the chunk digest with every RAGAS run |
+| 8 | `uv sync --frozen` with `UV_LINK_MODE=copy` [D: rag_phase8.md Step 1] | None found: the grammars are hash-pinned wheels in `uv.lock`, with nothing downloaded at run time | Keep `umask 022` for `uv` operations; never set `NLTK_DATA` or `TIKTOKEN_CACHE_DIR` |
+
+R10–R13 (section 9) still apply.
+
+**12.10 Privacy and network** [M], 2026-11-26
+- **Network in Step 7: none.** No download, installation or request to an external host. The only socket activity is the loopback probe of 11.1.
+- **Under `strace -f -e trace=network`,** the key test and `--json` (Appendix S1 method; `HOME`, `XDG_CACHE_HOME` and `TMPDIR` in an empty directory) make:
+  - only urllib3's `socket(AF_INET6)` + `bind` to `::1`, and no IP `connect`, `sendto` or `sendmsg`;
+  - under `env -i`, two `connect` calls to the local `nscd` Unix socket (absent: `ENOENT`). They come from pytest's user lookup for `tmp_path` and disappear when `USER` is set.
+- **Under `bwrap --unshare-net`:** the key test passes (8 of 8), and `--json` exits 0.
+- **Determinism and side effects:** `--json` gives byte-identical output under `strace`, under `bwrap` and through `make chunk`. Only pytest's empty temporary directories were written, in `TMPDIR`.
+- **Corpus:** same HEAD and an empty `git status` before and after every run.
+- **Content:** no corpus content, symbol or heading entered the conversation. `--list` and `--show` were run only on a synthetic repository.
+
 ## Appendix: Evidence and reproduction
 
 | # | Command | What it proves |
@@ -873,11 +1046,13 @@ A test fails when the loader emits a label that is in neither the registry nor t
 | P1 | `git -C <corpus> ls-files -z`, then the Steps 1–3 preview script via `uv run --locked --offline python -I`, from a new `mktemp -d` folder | Section 7.5: 88 files / 491,997 B and the discard reasons |
 | P2 | `make ingest INGEST_FLAGS="--repo ~/repos/project-to-index"` (also with `--list` and `--json`) | Section 8.7: 88 files / 491,997 B, discard reasons and pruned directories |
 | P3 | Only after an owner decision that changes the expected files. First check that `git -C <corpus> rev-parse HEAD` is the frozen SHA and `GIT_OPTIONAL_LOCKS=0 git -C <corpus> status --porcelain` is empty. Then run `uv run --locked --offline python -m tests.corpus_manifest --out tests/fixtures/corpus_manifest.tsv` from this repository's root. Validate independently: the paths against `git -C <corpus> ls-files -z`, every row against `sha256sum` and `stat`, and the set against a second traversal (the Steps 1–3 helper `_filter_tree`) | The manifest of section 9.6 |
-| P4 | `make test-corpus` (`pytest -m integration -rs tests/test_ingestion_corpus_integration.py`) | The key test (9.6). `make test-integration` also runs it, together with the two Phase 0 tests that need Ollama |
+| P4 | `make test-corpus` (`pytest -m integration -rs tests/test_ingestion_corpus_integration.py`; since Phase 2 Step 7 also `tests/test_chunking_corpus_integration.py`, section 12.3) | The key test (9.6). `make test-integration` also runs it, together with the two Phase 0 tests that need Ollama |
 | S1 | From a new `mktemp -d` folder, with `HOME`, `XDG_CACHE_HOME` and `TMPDIR` set to an empty directory: a script that imports `src.ingestion.segmenter`, loads the grammar and segments a synthetic text, run with `strace -f -qq -e trace=network -o <log> .venv/bin/python -I -B <script> <repo>` and with `bwrap --ro-bind / / --dev /dev --proc /proc --bind <dir> <dir> --unshare-net .venv/bin/python -I -B <script> <repo>` | Section 10.4: no network system calls, works with no network, writes nothing |
 | S2 | From a new `mktemp -d` folder: a script that loads the corpus with the loader, segments the `python` documents and runs `tests/chunking_invariants.py`, under `NetworkGuard`, via `PYTHONPATH=<repo>:<repo>/tests uv run --locked --offline python <script> <corpus>` | Section 10.5 |
 | S3 | As S1, with a script that runs `chunk_documents_with_report` on synthetic documents of every strategy, reads every `MetadataMode` view and round-trips each node through `node_to_metadata_dict` | Section 11.7: works with no network namespace; the only network calls are urllib3's loopback IPv6 probe |
 | S4 | `make chunk CHUNK_FLAGS="--repo ~/repos/project-to-index --json"`, then a `mktemp -d` script that runs every strategy's checkers on the 88 documents, under `NetworkGuard`, via `PYTHONPATH=<repo>:<repo>/tests uv run --locked --offline python <script> <corpus>` | Section 11.8 |
+| S5 | Only after an owner decision that changes the chunks. First check that `git -C <corpus> rev-parse HEAD` is the frozen SHA and `GIT_OPTIONAL_LOCKS=0 git -C <corpus> status --porcelain` is empty. Then run `uv run --locked --offline python -m tests.chunk_manifest --out tests/fixtures/chunk_manifest.json` from this repository's root (it refuses a corpus that fails those checks and writes atomically). Validate independently with a `mktemp -d` script, under `NetworkGuard`, via `PYTHONPATH=<repo>:<repo>/tests uv run --locked --offline python <script> <corpus>`: the manifest equals a fresh run; paths and languages equal `tests/fixtures/corpus_manifest.tsv`; row sums equal the report; `validate` gives 0 findings; only the definitions over the cap are split. Review the diff of the JSON (counts and digests only) before committing | The manifest of section 12.3 |
+| S6 | The owner, in a separate terminal (never through an agent or an IDE connected to one): `umask 077`; `D=$(mktemp -d)`; `make -s chunk CHUNK_FLAGS="--repo <corpus> --list" > "$D/list.tsv"`; for each sampled path `make -s chunk CHUNK_FLAGS="--repo <corpus> --show <path>" > "$D/<path with / as _>.txt"`; read the files next to the sources; `rm -rf -- "$D"`. Report findings as path + lines + symptom, never content. The content-free alternative is a `mktemp -d` script that checks every node's first and last line against `ast`, headings, blank lines and column 0 and prints counts only | Section 12.5 |
 
 C3 is a stdlib-only script, not versioned in this repository, and imports no networking modules. It does not follow symlinks and handles paths as bytes. Per file it records:
 - a binary flag (NUL byte in the first KiB), lines as `count("\n") + 1`, and UTF-8 validity;
