@@ -7,6 +7,7 @@
 | 2026-11-25 | 2: Chunking (Steps 1–2) | Coherence invariants, parser registry and segmenter (section 10). Steps 3–7 and Phases 3+ are planned, not built. |
 | 2026-11-26 | 2: Chunking (Steps 3–6) | Dispatch, nodes, fallbacks, chunker, report and CLI (section 11). Step 7 and Phases 3+ are planned, not built. |
 | 2026-11-26 | 2: Chunking (Step 7 and closure) | Tests, key test, review and closure (section 12). Phase 2 is closed; Phases 3+ are planned, not built. |
+| 2026-11-27 | 3: Embeddings and indexing (Steps 1–4) | Recipe, adapter, hardened Chroma store, manifest and pipeline (section 13). Steps 5–7 and Phases 4+ are planned, not built. |
 
 ## 0. How to read this document
 
@@ -166,6 +167,15 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | Public documentation re-read (PyPI JSON for `tree-sitter` and `tree-sitter-python`: releases, dates, sizes, hashes, yanked flags) | 2026-11-25 23:15:25Z | pypi.org | HTTP GETs; no repository data | 2 / Steps 1–2 | [S] |
 | `uv add "tree-sitter==0.26.1" "tree-sitter-python==0.25.0"` under `umask 022` (2 wheels, 782,192 B; hashes match PyPI) | 2026-11-25 23:18:10–23:18:11Z | pypi.org, files.pythonhosted.org | Package names and versions, uv's User-Agent | 2 / Steps 1–2 | [M] |
 | Phase 2 Steps 3–6: no download, no installation, no documentation read | 2026-11-26 | none | Nothing | 2 / Steps 3–6 | [M] |
+| Phase 2 Step 7: no download, no installation, no documentation read | 2026-11-26 | none | Nothing | 2 / Step 7 | [M] |
+| Public documentation reads (PyPI JSON for `chromadb`, `llama-index-vector-stores-chroma`, `llama-index-embeddings-ollama`; their GitHub sources; Chroma 1.5.9 sources; Ollama `docs/api.md`; the nomic-embed-text v1.5 model card and Ollama library page) | 2026-11-26 17:03:32–17:04:59Z | pypi.org, raw.githubusercontent.com, huggingface.co, ollama.com | HTTP GETs; no repository data | 3 / preparation | [S] |
+| Unintended: an unquoted `--noproxy *` made `curl` treat this repository's root file names as hosts: about 42 DNS lookups, and 3 `GET /` to `README.md` (a real domain, which answered 301) | 2026-11-26, just after 17:05:52Z | DNS resolver; the `README.md` host | Those file names and curl's User-Agent; no content, corpus or personal data | 3 / preparation (disclosed, owner chose to continue) | [S] |
+| PyPI JSON for 11 `chromadb` dependencies (size estimate) | 2026-11-26 17:34:34Z | pypi.org | HTTP GETs; no repository data | 3 / preparation | [S] |
+| Throwaway spike: `uv add --no-sync` on scratch copies of the lock, then install into a temporary venv with its own cache, deleted afterwards (about 84 MB) | 2026-11-26 17:36:34–17:37:25Z | pypi.org, files.pythonhosted.org | Package names and versions, uv's User-Agent | 3 / preparation (owner's OK) | [M] |
+| Blocked, nothing sent: Chroma's default embedding function tried to resolve its model host when invoked on purpose; `NetworkGuard` stopped it before DNS and `strace` showed no connect | 2026-11-26 17:38:36Z | chroma-onnx-models.s3.amazonaws.com (never reached) | Nothing | 3 / preparation (disclosed) | [M] |
+| PyPI JSON for `chromadb` 1.5.9 and `llama-index-vector-stores-chroma` 0.6.0 (dates, yanked flags) | 2026-11-27 10:37:49–10:37:50Z | pypi.org | HTTP GETs; no repository data | 3 / Steps 1–4 | [M] |
+| `uv add "chromadb==1.5.9" "llama-index-vector-stores-chroma==0.6.0"` under `umask 022` (55 packages, 83,866,105 B; no locked version moved) | 2026-11-27 10:52:56–10:53:05Z | pypi.org, files.pythonhosted.org | Package names and versions, uv's User-Agent | 3 / Steps 1–4 (owner's OK) | [M] |
+| Phase 3 Steps 1–4 at run time (`make index`, tests): loopback to Ollama only | 2026-11-27 | none | Nothing | 3 / Steps 1–4 | [M] |
 
 **3.4 Controls matrix**
 
@@ -184,6 +194,8 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | `models_present` check | Rejects models with no local weights (remote/cloud) | — | `tests/test_health_check.py` [M] |
 | Socket sampling | Ollama's TCP/UDP sockets to non-loopback peers | Connections shorter than the 1 s interval; lookups through the local resolver (127.0.0.53) | 579 samples, 0 non-loopback [H] |
 | Offline test | Generation and embedding with the network down | — | 22:25Z, exit 0; `nmcli networking connectivity` → `none`; `ip route show default` → empty [U] |
+| Chroma client factory (`src/indexing/vector_store.py`) | Every setting that decides where Chroma connects is pinned (no `.env`, no `CHROMA_*` overrides), and the effective settings are verified; no default embedding function; telemetry off | Chroma's native core, which the guard cannot see (covered by `strace` and `bwrap`, 13.7) | `tests/test_vector_store.py` (hostile `.env` and environment, in-process and fresh interpreter); static audit [M] |
+| Content-logger containment | `llama_index` and `chromadb` never log below WARNING, so retrieved code never reaches the logs | Other libraries added later | Sentinel tests with the root logger at DEBUG, with a negative control [M] |
 
 **3.5 Reproducing the audit:** see the Appendix, items A1–A5.
 
@@ -250,7 +262,7 @@ Update after Phase 2 Steps 1–2 (2026-11-25): chunking uses `tree-sitter` 0.26.
 |---|---|---|
 | `OLLAMA_CONTEXT_LENGTH` vs the Modelfile | Not verified | The owner adds `Environment="OLLAMA_CONTEXT_LENGTH=8192"` in a second drop-in and restarts Ollama. Load the derived model with no per-request `num_ctx` and read `context_length` from `/api/ps` (16384 means the Modelfile wins). Remove the drop-in and restart. |
 | Truncation limit at `num_ctx` 16384 | Not verified; only `limit=2050` at 4096 was observed | Run a needle prompt of about 9,000 tokens (about 490 filler lines at 18.3 tokens/line) on the derived model. Compare `prompt_eval_count` with the server log line `truncating input prompt limit=…`. About 13 min or more at 11.8 tok/s [E]. |
-| `/api/embed` above 2048 tokens | Not verified | Embed an input of about 10 KB; check whether the server errors or truncates (compare `prompt_eval_count` with the input length). |
+| `/api/embed` above 2048 tokens | Closed (section 13.3): Ollama 0.34.0 truncates silently to 2048 tokens by default and returns HTTP 400 with `truncate=false`; the project always sends `truncate=false` [M] | Embed an input of about 10 KB; check whether the server errors or truncates (compare `prompt_eval_count` with the input length). |
 | Ollama install date | TODO(user): on what date was Ollama installed? | — |
 | Sign-in status | Closed: never signed in [U] | No read-only CLI check exists |
 | Offline-test connectivity evidence | Closed [U] | Appendix A5 |
@@ -1027,6 +1039,156 @@ R10–R13 (section 9) still apply.
 - **Corpus:** same HEAD and an empty `git status` before and after every run.
 - **Content:** no corpus content, symbol or heading entered the conversation. `--list` and `--show` were run only on a synthetic repository.
 
+## 13. Phase 3 — Embeddings and indexing (Steps 1–4)
+
+Steps 1–4 turn the Phase 2 nodes into vectors with the local model and persist them in embedded ChromaDB [D: rag_phase3.md Steps 1–4]. The failures they guard against are silent ones: truncated text, a different recipe at index and query time, stale vectors, the wrong metric, an empty index. Step 5 (`load_index`), Step 6 (search) and Step 7 (key test) are not built yet. Code:
+- `src/indexing/embeddings.py`: recipe and adapter;
+- `src/indexing/vector_store.py`: store and generations;
+- `src/indexing/manifest.py`: the active-index pointer and manifest;
+- `src/indexing/build_index.py`: the pipeline and its CLI;
+- `src/ingestion/digest.py` and `src/ingestion/repo_head.py`: moved from `tests/` (decision P6).
+
+**13.1 Decisions**
+
+| ID | Decision | Source |
+|---|---|---|
+| P1 | Own `BaseEmbedding` adapter over the hardened `OllamaHttpClient`; `embed` gains `truncate` and the token count (additive). `llama-index-embeddings-ollama` is not installed: its client follows redirects, trusts proxy variables, has no timeout and no `truncate`, strips text, and pulls `pytest-asyncio` at run time | [U] 2026-11-26 |
+| P2 | Recipe: prefixes `search_document: ` and `search_query: `, `truncate=False` (typed error), cosine space set at creation; score = exp(cos − 1), so cos = 1 + ln(score) | [U] 2026-11-26 |
+| P3 | Keep `nomic-embed-text` v1.5 and accept Spanish; golden queries in Spanish and English (Step 6) | [U] 2026-11-26 |
+| P4 | Build a staging generation, activate it atomically, drop the old one; reuse a stored vector only for the same node ID, EMBED-string sha256, recipe fingerprint and model digest | [U] 2026-11-26 |
+| P5 | The manifest records everything Step 5 must compare (model, recipe, digests, repository identity); `load_index` and `StaleIndexError` arrive with Step 5 | [U] 2026-11-26 |
+| P6 | `document_digest`, `corpus_digest` and `read_head` live in `src/`; the Phase 2 helpers import them, and the expected values stay hardcoded (fixture, golden digest, frozen SHA) | [U] 2026-11-26 |
+| P7 | One index = one repository; the manifest records its resolved path and HEAD SHA, "not a git repo" or "HEAD unresolvable" with the reason | [U] 2026-11-26 |
+| P8 | Today: tests for Steps 1–4 and the real corpus run; golden queries, the key test and the owner's review belong to Steps 6–7 | [U] 2026-11-26 |
+| Q-A | `get_vector_store(persist_dir, collection)` returns a location handle (`IndexStore`) that `build_index` drives; Phases 4–5 call it unchanged | [U] 2026-11-27 |
+| Q-D | An unchanged repository is still rebuilt in staging, with every vector reused: one code path, always verified | [U] 2026-11-27 |
+| Q-E | The recipe fingerprint covers only what changes vectors (model, prefixes, `truncate`, dimension, context); batch size is operational (batching measured to change nothing) | [U] 2026-11-27 |
+| Q-F | The recipe lists the model digests it was verified for; an unknown digest behind the same name fails (`UnverifiedModelError`) | [U] 2026-11-27 |
+| Q-B | One Chroma directory per generation: `delete_collection` leaves deleted code in `chroma.sqlite3` (V2), deleting a directory leaves nothing | [U] 2026-11-27 |
+| Policies | Approved with four additions:<br>• store root `0700` and an `fsync` of the directory after `os.replace`;<br>• `EmbeddingRecipeError` (exit 10) and `UnverifiedModelError` (exit 13);<br>• index exit codes 30–33;<br>• the store factory also caps the `llama_index` and `chromadb` loggers at WARNING | [U] 2026-11-27 |
+| Chunker rule | Phase 2's "no module imports the chunker" now covers `src/ingestion/` only (its intent: no cycles); orchestrators such as `src.indexing` call its public API | [U] 2026-11-27 |
+| Chroma reads | Accepted: Chroma has no read-only mode, so opening a generation rewrites the content of its own sqlite and HNSW files (no file is created or deleted). Constructing the handle and reading the manifest write nothing | [U] 2026-11-27; [M] |
+
+**13.2 What an embedding is (Step 1).**
+- **Vectors.** An embedding model maps text to a vector, here 768 numbers of unit length. Texts that mean similar things get vectors that point in similar directions.
+- **Similarity.** Cosine similarity measures the angle between two vectors. For unit vectors it is their dot product: 1 means the same direction, values near 0 mean unrelated.
+- **Geometry as meaning.** Search embeds the question and returns the nearest code. "How do I authenticate?" shares no word with a function that verifies an access token, yet their vectors are close. The demo test proves it with the real model, `tests/test_embeddings_semantic_integration.py` [M]:
+  - English: the token check ranks first, cosine 0.704 against 0.556 for the best of five distractors;
+  - Spanish (`¿cómo me autentico?`): it also ranks first, 0.484 against 0.430, with a thinner margin (P3).
+- **Asymmetric prefixes.** nomic-embed-text v1.5 was trained to embed indexed text as `search_document: <text>` and questions as `search_query: <text>`. Ollama adds neither: its template is `{{ .Prompt }}`. The same text with and without its prefix gives vectors with cosine 0.94, so a prefix forgotten on one side moves everything slightly and silently.
+- **The same recipe.** Model, prefixes, truncation, dimension and context must be identical at index and query time. One `EmbeddingRecipe` serves both sides, and its fingerprint goes into the manifest.
+- **What breaks silently:**
+  - an input over 2048 tokens is cut without an error unless `truncate=False`;
+  - a new model behind `:latest` changes the space;
+  - Chroma's default metric is l2;
+  - `get_or_create_collection` turns a missing index into an empty one;
+  - an `add` with an existing ID is ignored, keeping the old vector.
+
+**13.3 The recipe** (`src/indexing/embeddings.py`, [M] 2026-11-26/27)
+
+| Field | Value |
+|---|---|
+| Model | `nomic-embed-text:latest` (v1.5, 137M, F16), verified digest `0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f` |
+| Prefixes | `search_document: ` (indexed text), `search_query: ` (questions); applied exactly once, no `.strip()` or normalization |
+| Truncation | `truncate=False`. Ollama 0.34.0 answers HTTP 400 `the input length exceeds the context length`. Without it, any input over 2048 tokens (CLS and SEP included) is cut silently. A batch with one long input fails as a whole, so the adapter re-embeds one by one and reports the position and length, never the text |
+| Dimension, context, batch | 768; 2048 tokens; 10 inputs per request. Batching changes no vector (max abs diff 0), and batch size gives no speed-up (458–494 ms per node, CPU-bound) |
+| Fingerprint | `546cb922dd10be43bb41dfb6ef3818579b7f0f3e12cb8498609dd87cd453ca81` (sha256 of the canonical JSON of the vector-affecting fields; pinned by a test) |
+| Vectors | Unit norm, deterministic, case-insensitive (upper and lower case give identical vectors: identifier case is invisible to the embedder); each one is checked for count, dimension, finiteness and non-zero |
+| Tokens on the corpus | EMBED string plus prefix: p50/p90/max 237/403/915 tokens, none above 75% of the context; 3.68 characters per token at the median, 1.73 at the minimum |
+| Identity | `identity()` checks with `ollama list` and `show` that the model is local (weights on disk, not cloud), that its digest is a verified one, and that context and dimension match. A missing model raises `ModelNotFoundError` naming `make pull-models`. Nothing is ever pulled |
+
+**13.4 The vector store** (`src/indexing/vector_store.py`)
+
+- **One client factory.** `chromadb.config.Settings` reads `.env` from the working directory and `CHROMA_*` environment variables. With `CHROMA_API_IMPL=…FastAPI` and a server host there, `PersistentClient` became an HTTP client and tried to reach that host (V1, measured inside `bwrap --unshare-net`; `NetworkGuard` blocked it, and Chroma re-raised the block as a `ValueError`). The factory:
+  - pins every field that decides the destination or the imported module (`_env_file=None`, the Rust API, persistence, telemetry off, `allow_reset` off, no server host or headers, an empty OpenTelemetry endpoint);
+  - checks the *effective* settings and closes and refuses any difference;
+  - refuses a directory that does not exist (V5: Chroma would create it).
+- **Collections.** Writing creates with `embedding_function=None` and `{"hnsw": {"space": "cosine"}}`; reading only opens with `embedding_function=None`, and the metric is verified on both paths. Never `get_or_create_collection`, `from_params`, a `ChromaVectorStore` without a collection, or `query_texts`: a static audit of `src/` enforces this.
+- **Layout** (Q-B):
+  - `<VECTOR_STORE_DIR>/` (`0700`, git-ignored; default `data/vector_store` under the repository root, never the working directory);
+  - `manifest.json`: the pointer and the manifest (`0600`);
+  - `.lock`: `fcntl` lock held while building;
+  - `gen-<utc>-<hex>/`: one complete Chroma store per generation (`0700`), with a `.local-code-rag-generation` marker. Only directories with that name pattern and marker are ever deleted; symlinks are never followed.
+- **Self-ingestion.** None of these file types is one the loader ingests (`.json`, `.sqlite3`, `.bin`, `.lock`, no extension), and `build_index` fails if any loaded document comes from inside the store.
+- **Logs.** `ChromaVectorStore` and `llama_index.core` log the first 100 characters of every retrieved node at DEBUG (V6). `configure_logging` and the factory keep `llama_index` and `chromadb` at WARNING, so a host that sets the root logger to DEBUG cannot leak code. A test with a sentinel in the code checks this, with a negative control.
+- **Releasing a generation.** After `close()` two sqlite file descriptors stay open until every reference to the collection is released. `discard` closes the client and collects garbage, then deletes the directory.
+
+**13.5 The manifest** (`manifest.json`, `format` `local-code-rag/index-manifest`, `schema_version` 1). Keys, in order:
+- `generation`, `collection`, `created_utc`;
+- `repo` (`path`, `state`, `head`, `reason`);
+- `documents`, `nodes`, `node_digest` (the Phase 2 digest), `embed_digest` (sha256 over `<node id>:<sha256 of its EMBED string>` lines);
+- `embedder` (`model`, `digest`, `recipe_fingerprint`, `dimension`, `verified`), `recipe` (`to_dict()`, or null when unverified);
+- `ollama_version`, `metric`, `max_chunk_chars`, `rules_file_sha256`, `libraries` (chromadb, llama-index-core, llama-index-vector-stores-chroma, ollama, tree-sitter, tree-sitter-python).
+
+The reader is strict: unknown format or schema, extra or missing keys, or wrong types raise `VectorStoreError`, and the manifest is never repaired in place. The writer uses a temporary file, `fsync`, `os.replace` and an `fsync` of the directory.
+
+**13.6 The pipeline** (`build_index`; the order and its reasons are in the module docstring):
+1. lock;
+2. load and chunk;
+3. repository identity and digests;
+4. verify the embedder;
+5. reuse;
+6. staging and embedding (progress logged per batch, without content);
+7. verify count, IDs, metric, dimension, vectors and every reconstructed node hash;
+8. check the model digest again;
+9. activate;
+10. discard the previous generation.
+
+Any exception before activation, `KeyboardInterrupt` included, discards the staging generation, and the previous index keeps serving. Nothing is ever added to `node.metadata` (it would change the hash). `make index` (`python -m src.indexing.build_index [--repo] [--rules-file] [--json]`) runs it under `NetworkGuard`; exit codes 30–33 are listed in the module docstring.
+
+**13.7 Evidence** [M], 2026-11-27
+
+| Check | Result |
+|---|---|
+| V1–V7 on this host | All confirmed (spike in a `mktemp -d`, synthetic data, `.venv/bin/python`). V4: an `add` with an existing ID is ignored; NaN and a wrong dimension are rejected; the zero vector is accepted (the adapter rejects it); vectors come back at float32 precision; the maximum write batch is 5461 |
+| Ollama `/api/embed` | Status and message as in 13.3; `prompt_eval_count` of a batch is the sum of its inputs' tokens |
+| Corpus, first run | 88 documents → 658 nodes, all embedded; node digest `0ddc4d1ae608b2e92a3e6840a2d5fdd6d6fd0b3e9961b4c4d284c82f982444cd` (Phase 2's); 343.9 s (5 min 45 s wall); 14,481,604 B on disk; peak RSS of the indexing process 266 MB; `nomic-embed-text` resident in Ollama 376,449,269 B |
+| Corpus, second run | 658 reused, 0 embedded, 0 removed, same node and EMBED digests, one generation left; 1.4 s |
+| Corpus integrity | Same HEAD and empty `git status` before and after; `make chunk --json` still 88 → 658 (279/340/39) |
+| Tests | `make check` 1,267 passed (1,110 before). Key files: `test_build_index.py` 40, `test_vector_store.py` 36, `test_embeddings.py` 45, `test_config.py` 104. `make test-corpus` 18 (one P6 test added). Integration: the Step 1 demo, 2 tests |
+| Privacy | Every test under `NetworkGuard` with 0 violations. A fresh interpreter indexes and queries with a hostile `.env`, `CHROMA_*` and proxy variables: 0 violations, no `onnxruntime`, no writes outside the store. `strace -f -e trace=network` on `make index` of a synthetic repository: connects only to `127.0.0.1:11434` and the absent local `nscd` socket, plus urllib3's `::1` probe; no non-loopback send. `bwrap --unshare-net` with the fake embedder: 126 tests pass. A temporary `HOME` and `XDG_CACHE_HOME` stay empty |
+
+**13.8 Deviations from rag_phase3.md (Steps 1–4)**
+
+| Doc | This project | Why |
+|---|---|---|
+| `uv add llama-index-embeddings-ollama llama-index-vector-stores-chroma chromadb` without versions | `chromadb==1.5.9`, `llama-index-vector-stores-chroma==0.6.0`; no Ollama integration | P1; V1–V6 depend on the versions; newest releases at least 14 days old |
+| `OllamaEmbedding(model_name, base_url)` | `OllamaEmbeddingAdapter` over the hardened client | P1 |
+| No prefixes, default truncation | One recipe with prefixes, `truncate=False`, fingerprint and verified digests | P2, Q-E, Q-F |
+| `get_or_create_collection`, default metric and embedding function | Writes create, reads open; cosine; `embedding_function=None` | V3 |
+| `Path("data/vector_store")` | Resolved against the repository root; overridable by `VECTOR_STORE_DIR` | Working-directory independence |
+| `vector_store or get_vector_store()` | `is None` checks | A falsy object is never replaced silently |
+| `get_vector_store` returns a `ChromaVectorStore` | It returns an `IndexStore` handle | Q-A |
+| `VectorStoreIndex(nodes, storage_context=…)` adds into the live collection | Staging generation, verification, atomic activation, manifest | P4, P5, P7, Q-B |
+| `EMBEDDING_MODEL`/`OLLAMA_BASE_URL` constants in config | Already defined and validated in Phase 0; only `VECTOR_STORE_DIR` and `COLLECTION_NAME` were added | — |
+| `__main__` with a search and `print` | A CLI that only indexes; search is Step 6 | Scope; Ruff `T20` |
+
+**13.9 Definition of Done** [D: rag_phase3.md, Verification]
+
+| # | Item | Status |
+|---|---|---|
+| 1 | `embeddings.py` configures the local model, used for indexing and querying | ✔ (13.3; `get_embedding_model()` serves both sides with one recipe) |
+| 2 | `vector_store.py` configures ChromaDB with disk persistence | ✔ (13.4) |
+| 3 | The pipeline repo → ingestion → chunking → embeddings → storage works end to end | ✔ (13.7: the corpus, 658 vectors) |
+| 4 | The index is persisted and reloaded without re-indexing | ⏳ persistence and the second run (0 embedded) are in place; `load_index` is Step 5 |
+| 5 | Tests verify that search returns relevant code | ⏳ Step 7 (the Step 1 demo is a first sign) |
+| 6 | Key test | ⏳ Steps 6–7, with the owner's golden queries and review |
+
+**13.10 Risks and limitations**
+
+| Item | Effect |
+|---|---|
+| Generations and live readers | A `VectorStoreIndex` returned by `build_index` (or held by Phase 6) reads a generation that the next activation deletes. Phase 6 must swap its state after `/index` and never serve while a build in another process activates. Step 5 should open a generation once per process |
+| Chroma rewrites on open | Opening a generation changes its internal files (13.1); two processes opening the same generation at once is unsupported by Chroma [H] |
+| Uncased embeddings | `getUserID` and `getuserid` embed identically; Phase 4's BM25 has to carry identifier case |
+| Spanish queries | Thinner margins (P3); measured on golden queries in Step 6 |
+| Embedding time | About 5–6 minutes for the corpus on this CPU, linear in the number of changed nodes |
+| Phase 4 | Its `src/settings.py` must use `get_embedding_model()`, not a second `OllamaEmbedding` (not installed) |
+| Phase 6 | `/index` takes a client path (R12), and one index holds one repository (P7) |
+| Phase 7 | RAGAS's own embeddings client would use another recipe |
+| Phase 8 | No `.dockerignore` yet (`COPY . .` would copy the index), Ollama published on all interfaces, `LOCAL_ALLOWED_HOSTS=ollama` needed |
+| Unverified embedders | A custom `embed_model` without `identity()` is indexed as "unverified" and never reused |
+
 ## Appendix: Evidence and reproduction
 
 | # | Command | What it proves |
@@ -1053,6 +1215,8 @@ R10–R13 (section 9) still apply.
 | S4 | `make chunk CHUNK_FLAGS="--repo ~/repos/project-to-index --json"`, then a `mktemp -d` script that runs every strategy's checkers on the 88 documents, under `NetworkGuard`, via `PYTHONPATH=<repo>:<repo>/tests uv run --locked --offline python <script> <corpus>` | Section 11.8 |
 | S5 | Only after an owner decision that changes the chunks. First check that `git -C <corpus> rev-parse HEAD` is the frozen SHA and `GIT_OPTIONAL_LOCKS=0 git -C <corpus> status --porcelain` is empty. Then run `uv run --locked --offline python -m tests.chunk_manifest --out tests/fixtures/chunk_manifest.json` from this repository's root (it refuses a corpus that fails those checks and writes atomically). Validate independently with a `mktemp -d` script, under `NetworkGuard`, via `PYTHONPATH=<repo>:<repo>/tests uv run --locked --offline python <script> <corpus>`: the manifest equals a fresh run; paths and languages equal `tests/fixtures/corpus_manifest.tsv`; row sums equal the report; `validate` gives 0 findings; only the definitions over the cap are split. Review the diff of the JSON (counts and digests only) before committing | The manifest of section 12.3 |
 | S6 | The owner, in a separate terminal (never through an agent or an IDE connected to one): `umask 077`; `D=$(mktemp -d)`; `make -s chunk CHUNK_FLAGS="--repo <corpus> --list" > "$D/list.tsv"`; for each sampled path `make -s chunk CHUNK_FLAGS="--repo <corpus> --show <path>" > "$D/<path with / as _>.txt"`; read the files next to the sources; `rm -rf -- "$D"`. Report findings as path + lines + symptom, never content. The content-free alternative is a `mktemp -d` script that checks every node's first and last line against `ast`, headings, blank lines and column 0 and prints counts only | Section 12.5 |
+| E1 | `make index` (twice) on the frozen corpus; on a synthetic repository with `VECTOR_STORE_DIR` set to a temporary directory: `strace -f -qq -e trace=network -o <log> make -s index INDEX_FLAGS="--repo <repo> --rules-file <empty file> --json"`, and the same CLI via `.venv/bin/python -m src.indexing.build_index` with `HOME`, `XDG_CACHE_HOME` and `TMPDIR` in an empty directory | Section 13.7: 658 vectors with the Phase 2 digest, a second run that embeds nothing; only loopback to Ollama |
+| E2 | From a new `mktemp -d` folder, synthetic data only: scripts run with `.venv/bin/python -B` and an empty `HOME`, under `strace -f -e trace=network`; the hostile-`.env` case (V1) inside `bwrap --ro-bind / / --dev /dev --proc /proc --bind <dir> <dir> --unshare-net` | Section 13.7: V1–V7 |
 
 C3 is a stdlib-only script, not versioned in this repository, and imports no networking modules. It does not follow symlinks and handles paths as bytes. Per file it records:
 - a binary flag (NUL byte in the first KiB), lines as `count("\n") + 1`, and UTF-8 validity;

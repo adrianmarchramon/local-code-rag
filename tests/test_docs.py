@@ -7,7 +7,8 @@ paths. `TODO(user)` markers are allowed. Phase 1: every discard reason, every la
 the frozen corpus commit and the expected totals are named. Phase 2: the installed tree-sitter
 versions, every span kind and the chunk cap are named; Steps 3-6: every strategy, every
 fallback reason and the node-ID namespace are named; Step 7: the chunk manifest's path, corpus
-digest and totals are named, read from the manifest itself.
+digest and totals are named, read from the manifest itself. Phase 3: the embedding recipe
+(prefixes, verified digests, fingerprint) and the pinned Chroma versions are named.
 """
 
 import json
@@ -41,6 +42,7 @@ REQUIRED_H2 = (
     "## 10. Phase 2 — Syntax-aware chunking (Steps 1\u20132)",  # \u2013: en dash
     "## 11. Phase 2 — Metadata, fallbacks and the chunker (Steps 3\u20136)",  # \u2013: en dash
     "## 12. Phase 2 — Step 7 and closure",
+    "## 13. Phase 3 — Embeddings and indexing (Steps 1\u20134)",  # \u2013: en dash
 )
 USER_PATH = re.compile(r"/home/[^/\s]+|/Users/[^/\s]+|[A-Za-z]:\\Users\\", re.IGNORECASE)
 
@@ -124,3 +126,17 @@ def test_document_names_the_chunk_manifest_and_its_figures() -> None:
     assert manifest["digest"]["corpus"] in text
     assert f"{report['documents']} \u2192 {report['nodes']} nodes" in text  # \u2192: arrow
     assert f"{report['forced']} forced" in text
+
+
+def test_document_names_the_embedding_recipe_and_the_pinned_store_versions() -> None:
+    from src.indexing.embeddings import recipe_for
+
+    text = "\n".join(_doc_lines())
+    recipe = recipe_for(config.DEFAULT_EMBEDDING_MODEL)
+
+    assert recipe.fingerprint() in text
+    assert all(digest in text for digest in recipe.verified_digests)
+    assert f"`{recipe.document_prefix}`" in text
+    assert f"`{recipe.query_prefix}`" in text
+    for package in ("chromadb", "llama-index-vector-stores-chroma"):
+        assert f"`{package}=={version(package)}`" in text
