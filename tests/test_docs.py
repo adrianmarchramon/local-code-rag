@@ -8,7 +8,8 @@ the frozen corpus commit and the expected totals are named. Phase 2: the install
 versions, every span kind and the chunk cap are named; Steps 3-6: every strategy, every
 fallback reason and the node-ID namespace are named; Step 7: the chunk manifest's path, corpus
 digest and totals are named, read from the manifest itself. Phase 3: the embedding recipe
-(prefixes, verified digests, fingerprint) and the pinned Chroma versions are named.
+(prefixes, verified digests, fingerprint) and the pinned Chroma versions are named; Steps
+5-7: the load/search exit codes, the golden file and the key-test target are named.
 """
 
 import json
@@ -43,6 +44,7 @@ REQUIRED_H2 = (
     "## 11. Phase 2 — Metadata, fallbacks and the chunker (Steps 3\u20136)",  # \u2013: en dash
     "## 12. Phase 2 — Step 7 and closure",
     "## 13. Phase 3 — Embeddings and indexing (Steps 1\u20134)",  # \u2013: en dash
+    "## 14. Phase 3 — Steps 5\u20137 and closure",  # \u2013: en dash
 )
 USER_PATH = re.compile(r"/home/[^/\s]+|/Users/[^/\s]+|[A-Za-z]:\\Users\\", re.IGNORECASE)
 
@@ -140,3 +142,20 @@ def test_document_names_the_embedding_recipe_and_the_pinned_store_versions() -> 
     assert f"`{recipe.query_prefix}`" in text
     for package in ("chromadb", "llama-index-vector-stores-chroma"):
         assert f"`{package}=={version(package)}`" in text
+
+
+def test_document_names_the_step5_7_exit_codes_golden_file_and_targets() -> None:
+    from src.evaluation.retrieval import GOLDEN_VERSION
+    from src.indexing.build_index import ExitCode
+
+    text = "\n".join(_doc_lines())
+
+    assert f"`IncompatibleIndexError` (exit {ExitCode.INDEX_INCOMPATIBLE.value})" in text
+    assert f"`StaleIndexError` (exit {ExitCode.INDEX_STALE.value})" in text
+    assert f'{{"version": {GOLDEN_VERSION}, "queries"' in text
+    for name in (
+        "`eval/retrieval_golden.json`",
+        "`make test-index-corpus`",
+        "`make eval-retrieval`",
+    ):
+        assert name in text

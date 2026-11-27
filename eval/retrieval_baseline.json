@@ -1,0 +1,114 @@
+{
+  "format": "local-code-rag/retrieval-baseline",
+  "version": 1,
+  "created_utc": "2026-11-27T18:46:27+00:00",
+  "retriever": "vector-cosine",
+  "depth": 20,
+  "queries": {
+    "sha256": "09803093092e299932babaa725739d068f52b5cdcb08388f5ffd7fe2f193be67",
+    "count": 14
+  },
+  "index": {
+    "generation": "gen-20261127T184611601007Z-1fa485b5",
+    "nodes": 658,
+    "node_digest": "0ddc4d1ae608b2e92a3e6840a2d5fdd6d6fd0b3e9961b4c4d284c82f982444cd",
+    "embed_digest": "82391c84e3e40abe21d914c07af75eb1da9b05b96ff0672afce6b58c0dafba23",
+    "model": "nomic-embed-text:latest",
+    "model_digest": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f",
+    "recipe_fingerprint": "546cb922dd10be43bb41dfb6ef3818579b7f0f3e12cb8498609dd87cd453ca81"
+  },
+  "corpus_head": "5c288080c88f0bfec435af0093a5155baaf7f343",
+  "versions": {
+    "chromadb": "1.5.9",
+    "llama-index-core": "0.14.26",
+    "llama-index-vector-stores-chroma": "0.6.0",
+    "ollama": "0.6.3"
+  },
+  "metrics": {
+    "n": 14,
+    "hit@1": 0.7857,
+    "hit@3": 0.8571,
+    "hit@5": 0.8571,
+    "hit@10": 0.9286,
+    "hit@20": 1.0,
+    "mrr@20": 0.8341
+  },
+  "breakdown": {
+    "lang": {
+      "en": {
+        "n": 9,
+        "hit@1": 0.8889,
+        "hit@3": 1.0,
+        "hit@5": 1.0,
+        "hit@10": 1.0,
+        "hit@20": 1.0,
+        "mrr@20": 0.9444
+      },
+      "es": {
+        "n": 5,
+        "hit@1": 0.6,
+        "hit@3": 0.6,
+        "hit@5": 0.6,
+        "hit@10": 0.8,
+        "hit@20": 1.0,
+        "mrr@20": 0.6355
+      }
+    },
+    "kind": {
+      "concept": {
+        "n": 10,
+        "hit@1": 0.7,
+        "hit@3": 0.8,
+        "hit@5": 0.8,
+        "hit@10": 0.9,
+        "hit@20": 1.0,
+        "mrr@20": 0.7678
+      },
+      "identifier": {
+        "n": 4,
+        "hit@1": 1.0,
+        "hit@3": 1.0,
+        "hit@5": 1.0,
+        "hit@10": 1.0,
+        "hit@20": 1.0,
+        "mrr@20": 1.0
+      }
+    },
+    "target": {
+      "code": {
+        "n": 10,
+        "hit@1": 0.8,
+        "hit@3": 0.9,
+        "hit@5": 0.9,
+        "hit@10": 0.9,
+        "hit@20": 1.0,
+        "mrr@20": 0.8553
+      },
+      "docs": {
+        "n": 4,
+        "hit@1": 0.75,
+        "hit@3": 0.75,
+        "hit@5": 0.75,
+        "hit@10": 1.0,
+        "hit@20": 1.0,
+        "mrr@20": 0.7812
+      }
+    }
+  },
+  "ranks": {
+    "q01_en": 1,
+    "q01_es": 1,
+    "q02_en": 1,
+    "q02_es": 1,
+    "q03_en": 1,
+    "q03_es": 8,
+    "q04_en": 2,
+    "q04_es": 19,
+    "q05_en": 1,
+    "q05_es": 1,
+    "q06_id": 1,
+    "q07_id": 1,
+    "q08_id": 1,
+    "q09_id": 1
+  }
+}

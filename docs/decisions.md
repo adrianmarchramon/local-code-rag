@@ -8,6 +8,7 @@
 | 2026-11-26 | 2: Chunking (Steps 3–6) | Dispatch, nodes, fallbacks, chunker, report and CLI (section 11). Step 7 and Phases 3+ are planned, not built. |
 | 2026-11-26 | 2: Chunking (Step 7 and closure) | Tests, key test, review and closure (section 12). Phase 2 is closed; Phases 3+ are planned, not built. |
 | 2026-11-27 | 3: Embeddings and indexing (Steps 1–4) | Recipe, adapter, hardened Chroma store, manifest and pipeline (section 13). Steps 5–7 and Phases 4+ are planned, not built. |
+| 2026-11-27 | 3: Embeddings and indexing (Steps 5–7) | Verified loading, search, evaluation and tests (section 14); a Step 2 defect fixed (exhaustive HNSW search, 14.11). Phase 3 closed: all six Definition of Done items ✔, item 6 with the owner's review. Phases 4+ are planned, not built. |
 
 ## 0. How to read this document
 
@@ -176,6 +177,9 @@ TODO(user): Is a 4–5 minute answer acceptable for your demo? If not, which lev
 | PyPI JSON for `chromadb` 1.5.9 and `llama-index-vector-stores-chroma` 0.6.0 (dates, yanked flags) | 2026-11-27 10:37:49–10:37:50Z | pypi.org | HTTP GETs; no repository data | 3 / Steps 1–4 | [M] |
 | `uv add "chromadb==1.5.9" "llama-index-vector-stores-chroma==0.6.0"` under `umask 022` (55 packages, 83,866,105 B; no locked version moved) | 2026-11-27 10:52:56–10:53:05Z | pypi.org, files.pythonhosted.org | Package names and versions, uv's User-Agent | 3 / Steps 1–4 (owner's OK) | [M] |
 | Phase 3 Steps 1–4 at run time (`make index`, tests): loopback to Ollama only | 2026-11-27 | none | Nothing | 3 / Steps 1–4 | [M] |
+| Phase 3 Steps 5–7: no download, no installation, no documentation read; at run time loopback to Ollama only | 2026-11-27 | none | Nothing | 3 / Steps 5–7 | [M] |
+| Notes pasted into the assistant conversation by the owner (written locally): fragments of the golden queries' text, the names of the 4 placeholders and a description of one corpus chunk. They were not repeated or used | 2026-11-27 about 18:10Z | The assistant's provider | That text | 3 / Gate 3 | [S] |
+| Notes pasted into the assistant conversation by the owner (written locally, the Gate 3 review): headings of corpus sections, terms from the golden queries' text and descriptions of what some chunks hold. They were not repeated or used; 14.12 records the review by ID and category only | 2026-11-27 about 19:05Z | The assistant's provider | That text | 3 / Gate 3 | [S] |
 
 **3.4 Controls matrix**
 
@@ -1170,9 +1174,9 @@ Any exception before activation, `KeyboardInterrupt` included, discards the stag
 | 1 | `embeddings.py` configures the local model, used for indexing and querying | ✔ (13.3; `get_embedding_model()` serves both sides with one recipe) |
 | 2 | `vector_store.py` configures ChromaDB with disk persistence | ✔ (13.4) |
 | 3 | The pipeline repo → ingestion → chunking → embeddings → storage works end to end | ✔ (13.7: the corpus, 658 vectors) |
-| 4 | The index is persisted and reloaded without re-indexing | ⏳ persistence and the second run (0 embedded) are in place; `load_index` is Step 5 |
-| 5 | Tests verify that search returns relevant code | ⏳ Step 7 (the Step 1 demo is a first sign) |
-| 6 | Key test | ⏳ Steps 6–7, with the owner's golden queries and review |
+| 4 | The index is persisted and reloaded without re-indexing | ⏳ at Steps 1–4; ✔ since Step 5 (section 14.7) |
+| 5 | Tests verify that search returns relevant code | ⏳ at Steps 1–4; ✔ since Step 7 (section 14.7) |
+| 6 | Key test | ✔ since the owner's review (section 14.7) |
 
 **13.10 Risks and limitations**
 
@@ -1188,6 +1192,209 @@ Any exception before activation, `KeyboardInterrupt` included, discards the stag
 | Phase 7 | RAGAS's own embeddings client would use another recipe |
 | Phase 8 | No `.dockerignore` yet (`COPY . .` would copy the index), Ollama published on all interfaces, `LOCAL_ALLOWED_HOSTS=ollama` needed |
 | Unverified embedders | A custom `embed_model` without `identity()` is indexed as "unverified" and never reused |
+
+## 14. Phase 3 — Steps 5–7 and closure
+
+Steps 5–7 reload the index without re-indexing while refusing an incompatible or stale one, search it and measure the search, and test it [D: rag_phase3.md Steps 5–7]. Code:
+- `src/indexing/loading.py`: `load_index`, re-exported from `src.indexing.build_index`, where Phase 6 imports it;
+- `src/indexing/search.py`: search and its CLI;
+- `src/evaluation/retrieval.py`: golden queries, metrics, the `Retriever` protocol and the evaluator;
+- tests: `tests/test_loading.py`, `tests/test_search.py`, `tests/test_retrieval_eval.py`, `tests/test_indexing.py`, `tests/test_indexing_corpus_integration.py`, plus the helper `tests/retrieval_oracle.py`.
+
+**Status: Phase 3 is closed** (2026-11-27). All six Definition of Done items are ✔ (14.7). The owner's review answered "Yes, confirmed" (14.12), after the golden queries, the baseline (14.4) and the Step 2 fix (14.11).
+
+**14.1 Decisions**
+
+| ID | Decision | Source |
+|---|---|---|
+| Q-E | HEAD moved with identical nodes → `StaleIndexError`: P5 to the letter; the cheap re-run also refreshes the manifest | [U] 2026-11-27 |
+| Q-F | `load_index_with_report` exposes the loaded generation and `is_current()`; nothing reloads automatically (Phase 6 decides) | [U] 2026-11-27 |
+| Q-G | `eval/retrieval_golden.json` is git-ignored; a synthetic example, the queries' sha256 and the metrics are versioned | [U] 2026-11-27 |
+| Q-H | The corpus key test builds into a temporary store (never the owner's index) and has its own target | [U] 2026-11-27 |
+| Golden format | `{"version": 1, "queries": [{"id", "intent", "lang", "kind", "query", "expected_files"}]}`; it replaces the Steps 1–4 proposal, which was never used | [U] 2026-11-27 |
+| Corpus count | `make test-corpus` counts 18 (the P6 check added in Steps 1–4), not 17 | [U] 2026-11-27 |
+| Key-test cost | `make test-integration` ignores `tests/test_indexing_corpus_integration.py`; the key test runs via `make test-index-corpus` | [U] 2026-11-27 |
+| Policies | Approved with three additions:<br>• exit 2 for search usage errors; 34 incompatible, 35 stale;<br>• `load_index` lives in `loading.py` and is re-exported; the evaluator lives in `src/evaluation/retrieval.py`;<br>• evaluation depth 20, with code vs docs decided by the expected files' language | [U] 2026-11-27 |
+| Golden authorship | The owner asked the agent to write the queries; after the warning (corpus content would leave the machine, and queries by the implementer are not blind) the owner kept P8 |
+| Placeholders | The golden loader refuses a query or intent whose whole text is a template marker | [U] 2026-11-27 |
+| Exhaustive search | Fixes a Step 2 defect (14.11):<br>• a build sets each generation's `ef_search` to max(1024, vectors);<br>• loading refuses less (exit 34);<br>• the owner's index was rebuilt (658 reused, 0 embedded);<br>• the void baseline was overwritten | [U] 2026-11-27 | [U] 2026-11-27 |
+
+**14.2 Loading (Step 5).** `load_index(nodes=None, *, vector_store=None, embed_model=None, repo_path=None) -> VectorStoreIndex` and `load_index_with_report(...) -> LoadResult`. The report carries `index`, `manifest`, `generation`, `drift_checked`, `attempts`, `duration_ms`, `is_current()` and `close()`. In order:
+1. **Identity first.** The embedder must prove its identity: the real adapter asks Ollama, so loading needs Ollama on loopback, and the check is never skipped. An embedder without `identity()` is refused.
+2. **Open.** `open_active` never creates. A missing index raises `IndexNotFoundError`; a corrupt manifest, an unknown schema or a missing generation raises `VectorStoreError`.
+3. **Re-read the pointer.** The manifest is read again after opening, and the load retries a bounded number of times if it moved (3 by default).
+4. **Compatibility, always** (`compatibility_problems`, pure). Model, model digest, recipe fingerprint, dimension, metric (cosine), stored count against the manifest, and both identities verified. Any difference raises `IncompatibleIndexError` (exit 34), listing them all and naming `make index`.
+5. **Drift, only with `nodes`** (`drift_problems`, pure). The Phase 2 digest of the given nodes, and the HEAD of `repo_path` (or of the manifest's path) when the index recorded a SHA: a moved or unreadable HEAD is drift. A repository without git is checked by digest only. Any difference raises `StaleIndexError` (exit 35); the message notes that other ingestion or chunking rules also change the digest. `nodes=[]` is checked; `nodes=None` logs `index.drift_unchecked`.
+6. **Wrap** with the explicit embedder: zero document embeddings, and no file created or deleted (section 13.1 covers Chroma's rewrite of its own files on open).
+
+Loading never takes the build lock, and the `index.loaded` log carries the generation, counts, checks and duration, never content.
+
+- **A replaced generation is served silently.** Measured with synthetic data: when another process activates a new generation and deletes the old directory, an already-loaded index keeps returning the old results, with no error and nothing empty, because its open file handles keep the deleted files alive. `is_current()` detects it with one manifest read; loading again serves the new generation (Q-F).
+- **The reader/writer race.** Forced interleavings prove the retry: a generation deleted between reading and opening, and one replaced right after opening, both load the new generation at attempt 2; an index that keeps changing fails after the bounded attempts. A narrower window remains between the factory's existence check and `PersistentClient`: Chroma creates a missing directory with an empty `chroma.sqlite3` (measured), which would leave an empty, unmarked `gen-…` directory that no cleanup ever deletes. It holds no code; the load itself retries.
+- **One open per process.** Chroma keeps one `System` per persist directory and process, shared by reference count, and it rewrites its own files on open. Two consecutive loads in one process share it and close cleanly (tested); separate processes opening one generation at once are not supported by Chroma [H].
+
+**14.3 Search (Step 6).** `search(index, query, *, top_k=5, language=None) -> tuple[SearchHit, ...]` is pure over a loaded index. Each `SearchHit` carries `rank`, `file_path`, `symbol`, `start_line`, `end_line`, `language`, `score`, `cosine`, `node_id` and `text` (the Phase 6 `Source` fields, plus rank and cosine).
+- **Score.** `cosine = 1 + ln(score)`; it is `None` when the score is missing or non-positive.
+- **Filter.** `language` uses `MetadataFilters` with `FilterOperator.EQ`, as Phase 4 does. An unknown label is a usage error; a known label without chunks returns no hits.
+- **Recipe.** The query carries `search_query: ` exactly once, and no returned text carries a prefix: tested through the real adapter over `httpx.MockTransport`.
+- **Input.** An empty query is refused, since it would embed the prefix alone. An over-long query raises `EmbeddingInputTooLongError` and is never truncated. The query text never reaches logs or exceptions; only its length is logged.
+- **CLI.** `python -m src.indexing.search QUERY|- [--top-k] [--language] [--repo] [--rules-file] [--json | --show]`, through `make search SEARCH_FLAGS=…` (the recipe is not echoed). It chunks the repository without embedding and loads with those nodes, so a stale index is refused. It prints rank, path, lines, symbol, cosine and score. Code only with `--show`, with control characters and ANSI sequences escaped. Exit codes are those of `build_index`, plus 2 for usage errors.
+
+**14.4 Measuring it (Step 6)**
+- **Golden queries.** `eval/retrieval_golden.json`, git-ignored, written by the owner before seeing any result. `lang` is `es` or `en`, ES/EN pairs share an `intent`, and `kind` is `concept` or `identifier`. The loader is strict: unknown or missing keys, repeated IDs, empty or repeated `expected_files`, and files the index does not hold are errors that name the ID and the field, never the text. So is a query or intent whose whole text is a template marker: `REPLACE_WITH_…`, `<…>`, or text starting with TODO, FIXME, TBD or XXX. This rule was added after Gate 2 (see the baseline status). A synthetic example is `eval/retrieval_golden.example.json`.
+- **Metrics** (pure; hand-computed tests). A query's rank is the position of the first chunk from an expected file. hit@1/3/5/10/20 and MRR@20 are broken down by language, `kind` and code vs docs. No threshold: with 8–15 queries they are indicative.
+- **Evaluator.** `evaluate(queries, retriever, file_languages)` talks to a `Retriever` protocol (`name`, `rank(query, depth)`), so Phase 4 can plug its hybrid retriever and reranker into the same metrics; `VectorRetriever` is Phase 3's. `make eval-retrieval` (`python -m src.evaluation.retrieval`) loads the verified index with the repository's nodes.
+- **Baseline.** `--write-baseline eval/retrieval_baseline.json` (versioned) records metrics, breakdown, rank per ID, the queries' sha256 and count, the index identity (generation, digests, model and digest, recipe fingerprint), the corpus HEAD, depth, date and versions. It holds no query text and is never overwritten without `--overwrite-baseline`.
+- **Owner's review dump.** `--review-dir` dumps the queries and the retrieved code for the owner's review (`0700` directory, `0600` file); it is refused inside this repository or the indexed one.
+- **Baseline status:** ✔ recorded [M], 2026-11-27T18:46:27Z, after two discarded runs.
+  - **Discarded run 1** (18:05Z): 4 of the 14 queries (`q06_id`–`q09_id`, all `identifier`) still held template placeholders. Their ranks measure nothing, and neither does any aggregate that includes them. Validation missed it because the loader accepted any non-empty text; it now refuses whole-text template markers (owner's OK, 2026-11-27).
+  - **Discarded run 2** (between 18:17Z and 18:46Z): after the owner completed those 4 queries, the ranks changed from one process to the next (`q09_id` 1st or absent, `q04_es` 18th or 19th). The cause was a Step 2 defect: the HNSW search was approximate and different in every process (14.11). The run is void.
+  - **Golden file:** 14 queries; sha256 `09803093092e299932babaa725739d068f52b5cdcb08388f5ffd7fe2f193be67`.
+    - 9 are EN and 5 ES; 10 are `concept` and 4 `identifier`; 10 target code and 4 docs.
+    - They cover 9 intents, 5 of them as ES/EN pairs, with 13 distinct expected files.
+    - Only the 4 `identifier` queries changed: the file shrank by 39 bytes, exactly the difference between their old and new lengths.
+    - Each identifier is a symbol of a chunk of its expected file.
+  - **Baseline file:** `eval/retrieval_baseline.json`, sha256 `218fc62de1fd1a14686eee806423a610b4e571f1c3ee6225288e269519d78a89`, over generation `gen-20261127T184611601007Z-1fa485b5`: 658 nodes, digest `0ddc4d1a…`, corpus `5c288080…`, `ef_search` 1024.
+
+  | Group | n | hit@1 | hit@5 | MRR@20 |
+  |---|---|---|---|---|
+  | All | 14 | 0.7857 | 0.8571 | 0.8341 |
+  | EN | 9 | 0.8889 | 1.0 | 0.9444 |
+  | ES | 5 | 0.6 | 0.6 | 0.6355 |
+  | EN, the 5 paired queries only | 5 | 0.8 | 1.0 | 0.9 |
+  | concept | 10 | 0.7 | 0.8 | 0.7678 |
+  | identifier | 4 | 1.0 | 1.0 | 1.0 |
+  | code | 10 | 0.8 | 0.9 | 0.8553 |
+  | docs | 4 | 0.75 | 0.75 | 0.7812 |
+
+  - **Ranks and coverage:** every rank is 1 except `q03_es` 8, `q04_en` 2 and `q04_es` 19. hit@3 is 0.8571, hit@10 0.9286 and hit@20 1.0. The ranks equal those of an exact cosine kNN.
+  - **Reproducible:** three runs gave byte-identical output.
+  - **Spanish gap (P3):** on the 5 pairs, MRR@20 is 0.6355 in ES vs 0.9000 in EN. Two ES variants rank 8 and 19, where their EN pairs rank 1 and 2. With n = 5 this is input for Phase 7, not a decision.
+  - **Privacy of the run:**
+    - `strace` saw only `127.0.0.1:11434`, plus two failed `connect` calls to the absent nscd socket;
+    - `NetworkGuard` recorded 0 violations, and the logs carry no content;
+    - the baseline holds none of the 28 query and intent strings.
+
+**14.5 Definition of Done → tests → commands**
+
+| # | DoD item | Tests | Command |
+|---|---|---|---|
+| 1 | One local embedding model for indexing and querying | `test_embeddings.py`; the query-prefix test in `test_search.py` | `make test` |
+| 2 | ChromaDB with disk persistence | `test_vector_store.py` | `make test` |
+| 3 | The pipeline works end to end | `test_build_index.py`; the corpus key test | `make test`, `make test-index-corpus` |
+| 4 | Persisted and reloaded without re-indexing | `test_loading.py` (new process, 0 document embeddings); the corpus key test (new process, 0 embedded) | `make test`, `make test-index-corpus` |
+| 5 | Tests verify that search returns relevant code | `test_indexing.py` (hermetic, plus a broken embedder that makes it fail); the real-model test; HNSW against exact kNN | `make test`, `make test-integration` |
+| 6 | Key test: index a repository and search returns relevant snippets | The corpus key test; the golden-query baseline and the owner's review | `make test-index-corpus`, `make eval-retrieval`, owner's review |
+
+**14.6 Evidence** [M], 2026-11-27
+
+| Check | Result |
+|---|---|
+| Real model (Step 7) | "how are input data validated?" ranks the input check first among four distractors, although the check never uses "validate" in its path, symbol or body. The Spanish variant also ranks first |
+| Corpus key test | 5 passed in 379 s:<br>• 88 documents → 658 vectors, node digest `0ddc4d1a…`;<br>• second build: 658 reused, 0 embedded, identical IDs;<br>• a new process loads with 0 document embeddings;<br>• HNSW top-20 equals exact kNN for 5 generic queries;<br>• corpus unchanged, 0 guard violations;<br>• the owner's index untouched.<br>That oracle check passed by luck: before the fix it could fail (14.11). After the fix, 5 passed in 308 s |
+| Real index | `load_index(nodes=…)` on `data/vector_store`: verified with drift, 1 attempt, current, 486 ms |
+| Suite | `make check` 1,355 passed (1,269 before); `make test-corpus` 18; `make test-integration` 23 in 40 s; `make verify-local` OK; `uv lock --check` OK |
+| Privacy | A fresh interpreter builds, loads and searches with a hostile `.env`, `CHROMA_*`, proxies and the root logger at DEBUG: 0 violations, neither query nor code in the logs, no `onnxruntime`, `HOME` untouched. `strace -f -e trace=network` on a real `search` and `eval-retrieval` over a synthetic index: one connect to `127.0.0.1:11434`, every `sendto` on that socket, the local `nscd` socket and urllib3's `::1` probe; the query sentinel is absent from their output and logs. `bwrap --unshare-net`: the 88 tests of the new files pass |
+
+**14.7 Definition of Done** [D: rag_phase3.md, Verification]
+
+| # | Item | Status |
+|---|---|---|
+| 1 | `embeddings.py` configures the local model, used for indexing and querying | ✔ (13.3; one recipe, query prefix tested in 14.3) |
+| 2 | `vector_store.py` configures ChromaDB with disk persistence | ✔ (13.4) |
+| 3 | The complete pipeline works end to end | ✔ (13.7; the key test, 14.6) |
+| 4 | The index is persisted and can be reloaded without re-indexing | ✔ (14.2; 0 document embeddings in a new process, on synthetic data and the corpus) |
+| 5 | The tests verify that the search returns relevant code | ✔ (14.5; real model, first place) |
+| 6 | Key test: a similarity search returns relevant snippets | ✔ The corpus key test passes, the baseline is recorded (14.4), and the owner's review answered "Yes, confirmed" on 2026-11-27 (14.12) |
+
+**14.8 Deviations from rag_phase3.md (Steps 5–7)**
+
+| Doc | This project | Why |
+|---|---|---|
+| `load_index()` = `get_vector_store()` + `from_vector_store` | Open the active generation, verify compatibility and drift, then `from_vector_store` with an explicit embedder | P5 |
+| "Persistence is automatic" | Manifest verified on every load | P5 |
+| Search in the `__main__` of `build_index.py` | Separate search CLI over `load_index` | Searching never re-indexes |
+| `print` of content and raw scores | No `print`; content only with `--show`, sanitized; cosine = 1 + ln(score) | Privacy; P2 |
+| One query, eyeballed | Owner-written golden queries, metrics, owner review | P8 |
+| `except Exception` + `skipif` calling Ollama at collection time | `integration` marker, no `skip` | A skip is not evidence |
+| The hit is `validation.py` | Neutral names, distractors, no "validate" in the target | Path and symbol are embedded |
+| "Run them with `make test`" | Item 5 needs `make test-integration`; the key test has `make test-index-corpus` | `make test` excludes integration |
+
+**14.9 Contract audit with Phases 4–8** (read-only; ✔ confirmed, ✖ refuted, [H] not verifiable without those phases)
+
+| Phase | Point | Verdict and action |
+|---|---|---|
+| 4 | `src/settings.py` sets `Settings.embed_model = OllamaEmbedding(…)` | ✔ Clashes with P1 (the package is not installed): reuse `get_embedding_model()`, and never rely on `Settings` |
+| 4 | BM25 over the nodes | ✔ Build it from the same `nodes` passed to `load_index(nodes=…)`, so both see one digest |
+| 4 | Its `__main__` calls `build_index(REPO_PATH)` on every run | ✔ Cheap with reuse (1.4 s), but it activates a new generation each time; prefer `load_index` |
+| 4 | `SentenceTransformerRerank("BAAI/bge-reranker-base")` | ✔ in the doc; [H] it downloads the model on first use: needs explicit provisioning and an offline check |
+| 5 | The context uses `node.get_content()` | ✔ Raw text, no prefix (tested: stored text carries no prefix). No `as_query_engine` in Phase 5 |
+| 6 | Start-up `state["index"] = load_index()` | ✔ Pass the start-up nodes: `load_index(nodes=state["nodes"], repo_path=REPO_PATH)` |
+| 6 | `/index` assigns `state["nodes"]` before `build_index` | ✔ A failed build leaves nodes and index mismatched: assign both after success; handle `IndexLockedError` (exit 30); allow-list paths (R12); then load the new generation (Q-F) |
+| 6 | `API_HOST = "0.0.0.0"` | ✔ Use `127.0.0.1`; Streamlit usage statistics [H]: disable them explicitly |
+| 7 | RAGAS through LangChain's `ChatOllama` and `OllamaEmbeddings` | ✔ A third embeddings client without the recipe's prefixes; record corpus HEAD, node digest and baseline sha256 per run (R13); RAGAS telemetry [H] |
+| 8 | `COPY . .` without a `.dockerignore` | ✔ The image would contain `data/vector_store` (the code): add a `.dockerignore` |
+| 8 | `OLLAMA_BASE_URL=http://ollama:11434` | ✖ Not a clash: the configuration accepts it with `LOCAL_ALLOWED_HOSTS=ollama` (Phase 0) |
+| 8 | Ports `11434`, `8000`, `8501` on all interfaces | ✔ Bind them to `127.0.0.1` |
+| 8 | A `0700` volume against `appuser` | [H] The host directory belongs to the host user; a different UID inside the container cannot read it |
+| 8 | The repository path changes inside the container | ✔ Drift compares digest and HEAD, not the path; pass `repo_path` explicitly |
+
+**14.10 Limitations and risks**
+
+| Item | Effect |
+|---|---|
+| A replaced generation is served silently | Callers must check `is_current()` (Phase 6) |
+| Empty unmarked directory in a narrow race window | Harmless (no code); never deleted by the cleanup |
+| Uncased embeddings | Identifier case is invisible to the vector search; Phase 4's BM25 has to carry it |
+| Spanish margins | Thinner in Step 1 (13.2); first place in Step 7's real-model test; on the golden pairs, MRR@20 is 0.6355 in ES vs 0.9000 in EN, with n = 5 (14.4). This is input for Phase 7 (P3) |
+| Small n | 8–15 golden queries are indicative; no threshold |
+| File-level relevance | A hit is the first chunk from an expected file, even a heading-only chunk without the answer. Point 1 of the owner's review checks the content; chunk-level labels would be a Phase 4 choice |
+| Loading needs Ollama | By design (the digest check is never skipped) |
+| Exhaustive search cost | Every query visits every vector. That is trivial at 658; it grows linearly with the index, so revisit it if a repository reaches hundreds of thousands of chunks |
+
+**14.11 Step 2 defect: approximate, per-process HNSW search** [M], 2026-11-27, fixed with the owner's OK (stop 11)
+- **Symptom.** With identical inputs, the golden ranks changed between processes:
+  - in 2 of 5 CLI runs, `q09_id` was absent from the top 20 although it ranks 1st exactly;
+  - `q04_es` came 18th or 19th;
+  - in 3 of 5 processes, HNSW top-20 ≠ exact top-20 for some query.
+- **Ruled out.** Embeddings are deterministic and independent of the previous request: on a synthetic text, every repeat gave an identical vector, in 3 processes and after 5 different prior requests.
+- **Cause.** The generation created with Chroma's defaults (`ef_search` 100, `num_threads` = CPUs, `sync_threshold` 1000) never wrote its graph to disk: `link_lists.bin` 0 B, `data_level0.bin` sized for 100 elements, not 658. Every process rebuilds the graph from the log, so each gets a different graph and different approximate misses.
+- **Minimal synthetic case.** 658 clustered random vectors, 30 queries, 4 processes:
+
+  | Configuration | Queries that differ from exact | Across processes |
+  |---|---|---|
+  | Chroma's defaults | 1–5 | a different result in every process |
+  | `num_threads` 1 | 3 | still different |
+  | `ef_search` ≥ 200, set at creation or later with `modify` (Chroma keeps it) | 0 | identical |
+
+- **Fix.**
+  - `ChromaGeneration.make_search_exhaustive()` sets `ef_search` = max(`SEARCH_EF_FLOOR` 1024, vectors). The build calls it before verification, which then requires `ef_search` ≥ vectors.
+  - `compatibility_problems` refuses less (exit 34, naming `make index`).
+  - `modify` builds no embedding function: read in the source, then measured (none built, no `onnxruntime`, 0 violations). Its "legacy embedding function config" `DeprecationWarning` is silenced only around that call.
+- **Tests.**
+  - The synthetic case through the store: exact and identical in 2 new processes. Without the fix, the same scenario differs from exact in each of 4 processes (1–3 of 20 queries).
+  - The build sets the breadth.
+  - An approximate generation is refused with exit 34.
+  - The corpus key test's oracle, which had passed by luck, is now deterministic.
+- **Effect on the owner's index.**
+  - The old generation `…df25baa7` was refused with exit 34.
+  - `make index` built `gen-20261127T184611601007Z-1fa485b5`: 658 reused, 0 embedded, the same node digest and embed digest, 2.6 s, loopback only.
+
+**14.12 Owner's review (Gate 3)** [U], 2026-11-27. Done in a clean terminal, outside the assistant, and the temporary directory was deleted. Verdict: approved as Phase 3's baseline, then "Yes, confirmed". Recorded here by ID, rank and category only: no query terms, headings, symbols or content.
+
+| Point | Finding |
+|---|---|
+| 1. First chunk | `identifier` 4/4 at rank 1 with the exact symbol; 3 return the whole definition. In `q06_id` the body continues in the next chunk (a forced cut). Useful answer at rank 1: `q02_en`, `q02_es`, `q05_en`, `q05_es` (in `q05` the values live in the second expected file). File hit but the chunk does not answer (risk 14.10): `q01_es` (the module's header chunk), `q01_en` (another part of the same file), `q03_en` (another section of the same document) |
+| 2. Path, lines, symbol | Correct for all 14; `-` for module-level and YAML blocks, as the chunker emits |
+| 3. Above the expected file | `q04_en` (2): a reasonable distractor, a design document that edges out the code. `q03_es` (8): a failure, code that only shares generic words. `q04_es` (19): a reasonable distractor at rank 1, but the code sinks to 19, a severe ranking failure |
+| 4. ES vs EN | ES cosines are about 0.13–0.22 lower in every pair. ES holds when the query shares literal technical vocabulary and degrades with translated domain terms |
+| 5. Free questions (3, the owner's) | Identifier: excellent (the definition at rank 1, its uses at 2–5). EN concept: the right document in the top 5, but a less relevant section outranks the best one and prose pushes code out of the top 5. ES concept: the right document in the top 5, a heading-only chunk at rank 1, the useful chunks at 2–4 |
+
+**Inputs for Phase 4** (observations, not decisions):
+- **Chunk-level labels.** File-level hit@k overstates relevance: 3 of the 10 `concept` hits are file hits whose chunk does not answer. Chunk- or section-level labels, or a reviewed top-k, would measure it.
+- **Reranker.** Its targets are the order of sections inside the right document, heading-only chunks at rank 1, and prose outranking code.
+- **BM25.** It will not close the ES gap: translated terms share no tokens with the code. Query translation or the Phase 7 model decision is the lever (P3).
+- **Chunk shape.** Heading-only chunks and forced cuts are Phase 2 output (closed; node IDs are fixed). Phase 4 can mitigate them at retrieval time, for example by returning the neighbouring chunk, without changing nodes.
 
 ## Appendix: Evidence and reproduction
 
@@ -1217,6 +1424,8 @@ Any exception before activation, `KeyboardInterrupt` included, discards the stag
 | S6 | The owner, in a separate terminal (never through an agent or an IDE connected to one): `umask 077`; `D=$(mktemp -d)`; `make -s chunk CHUNK_FLAGS="--repo <corpus> --list" > "$D/list.tsv"`; for each sampled path `make -s chunk CHUNK_FLAGS="--repo <corpus> --show <path>" > "$D/<path with / as _>.txt"`; read the files next to the sources; `rm -rf -- "$D"`. Report findings as path + lines + symptom, never content. The content-free alternative is a `mktemp -d` script that checks every node's first and last line against `ast`, headings, blank lines and column 0 and prints counts only | Section 12.5 |
 | E1 | `make index` (twice) on the frozen corpus; on a synthetic repository with `VECTOR_STORE_DIR` set to a temporary directory: `strace -f -qq -e trace=network -o <log> make -s index INDEX_FLAGS="--repo <repo> --rules-file <empty file> --json"`, and the same CLI via `.venv/bin/python -m src.indexing.build_index` with `HOME`, `XDG_CACHE_HOME` and `TMPDIR` in an empty directory | Section 13.7: 658 vectors with the Phase 2 digest, a second run that embeds nothing; only loopback to Ollama |
 | E2 | From a new `mktemp -d` folder, synthetic data only: scripts run with `.venv/bin/python -B` and an empty `HOME`, under `strace -f -e trace=network`; the hostile-`.env` case (V1) inside `bwrap --ro-bind / / --dev /dev --proc /proc --bind <dir> <dir> --unshare-net` | Section 13.7: V1–V7 |
+| E3 | `make test-index-corpus` (pytest `-m integration -rs tests/test_indexing_corpus_integration.py`): the corpus built twice into a temporary store, reloaded in a new process, HNSW against exact kNN | Section 14.6: the key test |
+| E4 | On a synthetic repository indexed into a temporary `VECTOR_STORE_DIR`: `strace -f -qq -e trace=network -o <log> .venv/bin/python -B -m src.indexing.search "<question>" --repo <repo> --rules-file <empty file>` and the same for `-m src.evaluation.retrieval --golden <synthetic golden file>`, with `HOME`, `XDG_CACHE_HOME` and `TMPDIR` in an empty directory | Section 14.6: only loopback to Ollama |
 
 C3 is a stdlib-only script, not versioned in this repository, and imports no networking modules. It does not follow symlinks and handles paths as bytes. Per file it records:
 - a binary flag (NUL byte in the first KiB), lines as `count("\n") + 1`, and UTF-8 validity;
