@@ -152,3 +152,33 @@ class IndexLockedError(IndexingError):
 
 class IndexBuildError(IndexingError):
     """Building the index failed; the previous index, if any, is still the active one."""
+
+
+# --- Phase 3, Steps 5-7: loading, search and evaluation -------------------------------------
+
+
+class IncompatibleIndexError(IndexingError):
+    """The persisted index cannot be queried with this embedder (model, recipe, dimension,
+    metric or count differ, or an identity cannot be verified). Rebuild it with ``make index``.
+    """
+
+
+class StaleIndexError(IndexingError):
+    """The persisted index no longer matches the repository (its nodes or HEAD changed).
+
+    Citations would point to shifted lines; rebuild it with ``make index`` (unchanged nodes
+    reuse their vectors, so it is cheap).
+    """
+
+
+class InvalidQueryError(IndexingError):
+    """A search query or its parameters are unusable (empty query, invalid top-k, language)."""
+
+
+class EvaluationError(LocalStackError):
+    """Retrieval evaluation cannot run (Phase 3, Step 6)."""
+
+
+class GoldenQueriesError(EvaluationError):
+    """The golden queries file breaks its format; messages name the query id and the field,
+    never the query text."""

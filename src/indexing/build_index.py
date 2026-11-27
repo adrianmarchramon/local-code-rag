@@ -37,6 +37,10 @@ code. Exit codes: 0 OK; 1 unexpected; 10 configuration (or no recipe for the mod
 Ollama unavailable; 12 model missing; 13 verification failed (unverified model, invalid
 vector, input too long); 14 external network access attempted; 20 ingestion; 21 no
 documents; 30 index locked; 31 build failed; 32 vector store unusable; 33 no index.
+Step 5 (loading and search CLIs) adds 34 incompatible index and 35 stale index.
+
+``load_index`` and ``load_index_with_report`` (Step 5) live in :mod:`src.indexing.loading`
+and are re-exported here, where Phase 6 imports them.
 """
 
 from __future__ import annotations
@@ -65,6 +69,7 @@ from src.errors import (
     ConfigurationError,
     EmbeddingInputTooLongError,
     ExternalNetworkAccessError,
+    IncompatibleIndexError,
     IndexBuildError,
     IndexingError,
     IndexLockedError,
@@ -74,6 +79,7 @@ from src.errors import (
     ModelNotFoundError,
     NoDocumentsError,
     OllamaUnavailableError,
+    StaleIndexError,
     VectorStoreError,
     VerificationError,
 )
@@ -349,6 +355,8 @@ def _write(
 def _verify(staging: StoredGeneration, nodes: Sequence[BaseNode], dimension: int | None) -> None:
     if staging.metric() != METRIC:
         raise IndexBuildError(f"staging generation uses {staging.metric()!r}, not {METRIC!r}")
+    if staging.search_breadth() < staging.count():
+        raise IndexBuildError("staging's HNSW search would be approximate (ef_search < vectors)")
     expected = {node.node_id: node.hash for node in nodes}
     seen: dict[str, str] = {}
     for node, vector in staging.entries():
@@ -446,6 +454,7 @@ def build_index_with_report(
             if dimension is None and copies and copies[0].embedding is not None:
                 dimension = len(copies[0].embedding)
             _write(staging, copies, write_batch_size)
+            staging.make_search_exhaustive()
             _verify(staging, nodes, dimension)
             if identity.verified and _identity(embedder).digest != identity.digest:
                 raise IndexBuildError(
@@ -578,6 +587,8 @@ class ExitCode(IntEnum):
     INDEX_BUILD = 31
     VECTOR_STORE = 32
     INDEX_NOT_FOUND = 33
+    INDEX_INCOMPATIBLE = 34  # Step 5
+    INDEX_STALE = 35  # Step 5
 
 
 _EXIT_CODE_BY_ERROR: Final[tuple[tuple[type[LocalStackError], ExitCode], ...]] = (
@@ -591,6 +602,8 @@ _EXIT_CODE_BY_ERROR: Final[tuple[tuple[type[LocalStackError], ExitCode], ...]] =
     (IndexLockedError, ExitCode.INDEX_LOCKED),
     (IndexBuildError, ExitCode.INDEX_BUILD),
     (IndexNotFoundError, ExitCode.INDEX_NOT_FOUND),
+    (IncompatibleIndexError, ExitCode.INDEX_INCOMPATIBLE),
+    (StaleIndexError, ExitCode.INDEX_STALE),
     (VectorStoreError, ExitCode.VECTOR_STORE),
 )
 
@@ -659,3 +672,9 @@ def main(argv: Sequence[str] | None = None, *, stdout: TextIO | None = None) -> 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Step 5: the loading API, re-exported where Phase 6 imports it (defined in src.indexing.loading,
+# which imports this module's repo_identity at call time, so there is no import cycle).
+from src.indexing.loading import load_index as load_index  # noqa: E402
+from src.indexing.loading import load_index_with_report as load_index_with_report  # noqa: E402
