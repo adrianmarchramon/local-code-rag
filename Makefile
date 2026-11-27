@@ -38,7 +38,7 @@ test: ## Unit tests (integration tests excluded)
 	$(UV_RUN) pytest
 
 test-integration: ## Integration tests (need local Ollama and the configured models)
-	$(UV_RUN) pytest -m integration
+	$(UV_RUN) pytest -m integration --ignore=tests/test_indexing_corpus_integration.py
 
 check: lint format-check typecheck test ## Run all quality gates
 
@@ -74,6 +74,21 @@ INDEX_FLAGS ?=
 index: ## Build or refresh the vector index of REPO_PATH (needs local Ollama; no search)
 	$(UV_RUN) python -m src.indexing.build_index $(INDEX_FLAGS)
 
+# --- Search and retrieval evaluation (Phase 3, Steps 5-6) -----------------------------------
+# Both load the verified index (never re-index) and refuse a stale or incompatible one. The
+# recipes start with @ so make never echoes your query. `search --show` and `eval-retrieval
+# --review-dir` print code: run them in your own terminal.
+# Examples: make search SEARCH_FLAGS='"how are tokens checked?" --top-k 5'
+#           make eval-retrieval EVAL_FLAGS="--json"
+SEARCH_FLAGS ?=
+EVAL_FLAGS ?=
+.PHONY: search eval-retrieval
+search: ## Search the verified index (needs local Ollama; code only with --show)
+	@$(UV_RUN) python -m src.indexing.search $(SEARCH_FLAGS)
+
+eval-retrieval: ## Evaluate retrieval on eval/retrieval_golden.json (ranks by ID; needs Ollama)
+	@$(UV_RUN) python -m src.evaluation.retrieval $(EVAL_FLAGS)
+
 # Phase 2 (Step 7) adds its key test, tests/test_chunking_corpus_integration.py, to this target.
 # --- Phase 1 key test (Step 7) ------------------------------------------------------------
 # Only the corpus key test, not the Ollama integration tests: offline and read-only. It skips,
@@ -81,6 +96,14 @@ index: ## Build or refresh the vector index of REPO_PATH (needs local Ollama; no
 .PHONY: test-corpus
 test-corpus: ## Phase 1 key test on the frozen corpus at REPO_PATH (offline, read-only; no Ollama)
 	$(UV_RUN) pytest -m integration -rs tests/test_ingestion_corpus_integration.py tests/test_chunking_corpus_integration.py
+
+# --- Phase 3 key test (Step 7) -------------------------------------------------------------
+# Builds the frozen corpus into a temporary store with the real model (about 6 minutes),
+# twice, and checks digest, reuse, reload without embedding and HNSW against exact kNN. It
+# never touches your index. Kept out of test-integration on purpose (owner's decision).
+.PHONY: test-index-corpus
+test-index-corpus: ## Phase 3 key test on the frozen corpus (needs local Ollama; ~6 min)
+	$(UV_RUN) pytest -m integration -rs tests/test_indexing_corpus_integration.py
 
 # --- Model provisioning (Phase 0, Steps 3 and 5) -----------------------------------------
 # make cannot import src/config.py, so these names repeat it on purpose and

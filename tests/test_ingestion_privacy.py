@@ -55,6 +55,10 @@ IMPORTS_UNDER_GUARD: tuple[str, ...] = (
     "src.indexing.manifest",
     "src.indexing.vector_store",
     "src.indexing.build_index",
+    # Phase 3 Steps 5-7 (appended): loading, search and retrieval evaluation.
+    "src.indexing.loading",
+    "src.indexing.search",
+    "src.evaluation.retrieval",
 )
 
 _CHILD = textwrap.dedent(
@@ -454,3 +458,91 @@ def test_indexing_needs_no_network_and_writes_only_its_store_even_with_a_hostile
     assert (report["second_embedded"], report["hits"]) == (0, 1)
     assert report["onnxruntime"] is False
     assert report["written_outside_repo_and_store"] == ["home"]
+
+
+_SEARCH_CHILD = textwrap.dedent(
+    """
+    import io, json, logging, sys
+    from pathlib import Path
+
+    repo_root, work = sys.argv[1], Path(sys.argv[2])
+    sys.path[:0] = [repo_root, repo_root + "/tests"]
+    from src.network_guard import NetworkGuard
+
+    capture = io.StringIO()
+    handler = logging.StreamHandler(capture)
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.DEBUG)
+    with NetworkGuard() as guard:
+        from fake_embedding import FakeEmbedding
+        from src.indexing.build_index import build_index_with_report, load_index_with_report
+        from src.indexing.search import search
+        from src.indexing.vector_store import ChromaIndexStore
+        from src.ingestion.chunker import chunk_documents
+        from src.ingestion.loader import load_repository
+
+        store = ChromaIndexStore(work / "vs", "code")
+        build_index_with_report(work / "repo", store, FakeEmbedding(), rules_file=work / "rules")
+        nodes = chunk_documents(load_repository(work / "repo", rules_file=work / "rules"))
+        loaded = load_index_with_report(nodes, vector_store=store, embed_model=FakeEmbedding())
+        hits = search(loaded.index, "SENTINEL_QUERY_9d3e verify token", top_k=2)
+        loaded.close()
+    logs = capture.getvalue()
+    print(json.dumps({
+        "violations": [repr(v) for v in guard.violations],
+        "hits": len(hits),
+        "query_in_logs": "SENTINEL_QUERY_9d3e" in logs,
+        "code_in_logs": "SENTINEL_CODE_5a1f" in logs,
+        "onnxruntime": "onnxruntime" in sys.modules,
+        "home": sorted(p.name for p in (work / "home").iterdir()),
+    }))
+    """
+)
+
+
+def test_loading_and_searching_need_no_network_and_log_no_content_even_with_a_hostile_env(
+    tmp_path: Path,
+) -> None:
+    """Phase 3 (Steps 5-6): build, load with drift check and search in a fresh interpreter
+    with a hostile .env, hostile CHROMA_* and proxy variables, and the root logger at
+    DEBUG. Nothing may leave the machine; neither the query nor the code may be logged."""
+    work = tmp_path / "work"
+    (work / "repo" / "src").mkdir(parents=True)
+    (work / "repo" / "src" / "auth.py").write_text(
+        "def verify_token(token):\n    return token == 'SENTINEL_CODE_5a1f'\n", encoding="utf-8"
+    )
+    (work / "rules").write_text("", encoding="utf-8")
+    (work / "home").mkdir()
+    (work / ".env").write_text(
+        "CHROMA_API_IMPL=chromadb.api.fastapi.FastAPI\nCHROMA_SERVER_HOST=203.0.113.10\n",
+        encoding="utf-8",
+    )
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(work / "home"),
+        "XDG_CACHE_HOME": str(work / "home"),
+        "TMPDIR": str(work / "home"),
+        "LC_ALL": "C.UTF-8",
+        "CHROMA_API_IMPL": "chromadb.api.fastapi.FastAPI",
+        "CHROMA_SERVER_HOST": "203.0.113.10",
+        "HTTP_PROXY": "http://203.0.113.10:3128",
+        "HTTPS_PROXY": "http://203.0.113.10:3128",
+        "ALL_PROXY": "http://203.0.113.10:3128",
+    }
+
+    result = subprocess.run(  # noqa: S603 (this interpreter, a constant script)
+        [sys.executable, "-I", "-B", "-c", _SEARCH_CHILD, str(REPO_ROOT), str(work)],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    report = json.loads(result.stdout)
+    assert report["violations"] == []
+    assert report["hits"] == 1  # one chunk in the repository
+    assert (report["query_in_logs"], report["code_in_logs"]) == (False, False)
+    assert (report["onnxruntime"], report["home"]) == (False, [])

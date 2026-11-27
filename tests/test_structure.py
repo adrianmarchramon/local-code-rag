@@ -27,6 +27,10 @@ SCAFFOLDED_MODULES: tuple[str, ...] = (
     "src.indexing.manifest",
     "src.ingestion.digest",
     "src.ingestion.repo_head",
+    # Phase 3 (Steps 5-7, appended)
+    "src.indexing.loading",
+    "src.indexing.search",
+    "src.evaluation.retrieval",
 )
 
 
