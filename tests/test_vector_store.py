@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import random
 import stat
 import subprocess
 import sys
@@ -677,3 +678,94 @@ def test_the_static_audit_can_fail() -> None:
     )
 
     assert len(_findings(source, "bad.py")) == 5
+
+
+# --- exhaustive search (the Step 2 fix of 2026-11-27) -----------------------------------------
+# Below Chroma's sync_threshold (1000) the HNSW graph is never written to disk: every process
+# rebuilds it, and with the default ef_search (100) the misses differed from run to run.
+
+SYNTH_N, SYNTH_DIM, SYNTH_K, SYNTH_QUERIES = 658, 256, 20, 20
+
+_QUERY_PROCESS = textwrap.dedent(
+    """
+    import json, sys
+    from pathlib import Path
+
+    sys.path.insert(0, sys.argv[1])
+    from src.network_guard import NetworkGuard
+
+    with NetworkGuard() as guard:
+        from src.indexing.vector_store import open_chroma_client
+
+        queries = json.loads(sys.stdin.read())
+        client = open_chroma_client(Path(sys.argv[2]))
+        collection = client.get_collection("code", embedding_function=None)
+        found = collection.query(query_embeddings=queries, n_results=int(sys.argv[3]), include=[])
+        client.close()
+    print(json.dumps({"violations": len(guard.violations), "ids": found["ids"]}))
+    """
+)
+
+
+def _unit(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(x * x for x in vector))
+    return [x / norm for x in vector]
+
+
+def _synthetic() -> tuple[list[list[float]], list[list[float]]]:
+    """Clustered unit vectors, like embeddings: the shape that showed per-process misses."""
+    rng = random.Random(1234)  # noqa: S311 (seeded test data, not cryptography)
+    centers = [[rng.gauss(0, 1) for _ in range(SYNTH_DIM)] for _ in range(25)]
+    points = [_unit([c + rng.gauss(0, 0.9) for c in centers[i % 25]]) for i in range(SYNTH_N)]
+    queries = [
+        _unit([x + rng.gauss(0, 0.5) for x in points[rng.randrange(SYNTH_N)]])
+        for _ in range(SYNTH_QUERIES)
+    ]
+    return points, queries
+
+
+def _exact(points: list[list[float]], query: list[float]) -> list[str]:
+    scores = [sum(a * b for a, b in zip(query, p, strict=True)) for p in points]
+    order = sorted(range(len(points)), key=lambda i: (-scores[i], i))
+    return [f"n{i:04d}" for i in order[:SYNTH_K]]
+
+
+def _query_in_a_new_process(path: Path, queries: list[list[float]], home: Path) -> list[list[str]]:
+    result = subprocess.run(  # noqa: S603 (this interpreter, a constant script)
+        [sys.executable, "-I", "-B", "-c", _QUERY_PROCESS, str(REPO_ROOT), str(path), str(SYNTH_K)],
+        input=json.dumps(queries),
+        cwd=home,
+        env={"PATH": os.environ.get("PATH", ""), "HOME": str(home), "LC_ALL": "C.UTF-8"},
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    report = json.loads(result.stdout)
+    assert report["violations"] == 0
+    ids: list[list[str]] = report["ids"]
+    return ids
+
+
+def test_an_exhaustive_generation_is_exact_and_identical_in_every_new_process(
+    store: ChromaIndexStore, tmp_path: Path
+) -> None:
+    points, queries = _synthetic()
+    staging = store.create_staging()
+    try:
+        staging.add(
+            [TextNode(id_=f"n{i:04d}", text=f"node {i}", embedding=p) for i, p in enumerate(points)]
+        )
+        assert staging.search_breadth() < SYNTH_N  # Chroma's default: an approximate search
+        assert staging.make_search_exhaustive() == max(vs.SEARCH_EF_FLOOR, SYNTH_N)
+        path = staging.path
+    finally:
+        staging.close()
+    exact = [_exact(points, q) for q in queries]
+
+    first = _query_in_a_new_process(path, queries, tmp_path)
+    second = _query_in_a_new_process(path, queries, tmp_path)
+
+    assert first == exact
+    assert second == exact

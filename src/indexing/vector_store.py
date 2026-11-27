@@ -15,6 +15,14 @@ one keeps its old metric), never ``ChromaVectorStore`` without a collection (it 
 ``HttpClient``), never ``from_params``, never ``query_texts`` (they would run Chroma's
 default embedding function, which downloads a model).
 
+**Exhaustive search** (a Step 2 defect fixed on 2026-11-27 with the owner's OK): a build
+raises each generation's HNSW ``ef_search`` to at least its vector count
+(:meth:`ChromaGeneration.make_search_exhaustive`, kept by Chroma), and loading refuses a
+generation below that. With Chroma's default (100) the search is approximate. Below
+``sync_threshold`` (1000) the graph is never written to disk and every process rebuilds
+it, so the misses differed from run to run: measured on the corpus, and on 658 synthetic
+vectors (1-5 of 30 queries wrong, a different result in every process).
+
 **Layout** (Gate 2 Q-B: one Chroma directory per generation, so a discarded index leaves
 no residue; ``delete_collection`` leaves deleted text in the sqlite file, V2)::
 
@@ -42,6 +50,7 @@ import re
 import secrets
 import shutil
 import stat
+import warnings
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +73,7 @@ logger = logging.getLogger(__name__)
 
 _COMPONENT: Final = "vector_store"
 METRIC: Final = "cosine"
+SEARCH_EF_FLOOR: Final = 1024  # ef_search = max(this, vectors): an exhaustive HNSW search
 LOCK_NAME: Final = ".lock"
 MARKER_NAME: Final = ".local-code-rag-generation"
 _MARKER_TEXT: Final = "local-code-rag index generation\n"
@@ -165,6 +175,10 @@ class StoredGeneration(Protocol):
 
     def metric(self) -> str: ...
 
+    def search_breadth(self) -> int: ...
+
+    def make_search_exhaustive(self) -> int: ...
+
     def max_batch_size(self) -> int: ...
 
     def add(self, nodes: Sequence[BaseNode]) -> None: ...
@@ -238,6 +252,33 @@ class ChromaGeneration:
         hnsw = self._live().configuration_json.get("hnsw") or {}
         space = hnsw.get("space") if isinstance(hnsw, dict) else None
         return str(space)
+
+    def search_breadth(self) -> int:
+        """HNSW ``ef_search``; the search is exhaustive (exact) only when it is >= count()."""
+        hnsw = self._live().configuration_json.get("hnsw") or {}
+        value = hnsw.get("ef_search") if isinstance(hnsw, dict) else None
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    def make_search_exhaustive(self) -> int:
+        """Raise ``ef_search`` to max(SEARCH_EF_FLOOR, count()), which Chroma persists."""
+        from chromadb.errors import ChromaError
+
+        breadth = max(SEARCH_EF_FLOOR, self.count())
+        try:
+            with warnings.catch_warnings():
+                # Chroma re-reads embedding_function=None as a "legacy" config here and warns;
+                # it keeps no embedding function (read in 1.5.9, measured: none built).
+                warnings.filterwarnings(
+                    "ignore", "legacy embedding function config", DeprecationWarning
+                )
+                self._live().modify(configuration={"hnsw": {"ef_search": breadth}})
+        except (ChromaError, ValueError) as exc:
+            raise VectorStoreError(
+                f"generation {self._name} refused ef_search {breadth} ({type(exc).__name__})"
+            ) from exc
+        if self.search_breadth() != breadth:
+            raise VectorStoreError(f"generation {self._name} did not keep ef_search {breadth}")
+        return breadth
 
     def max_batch_size(self) -> int:
         if self._client is None:
@@ -497,6 +538,7 @@ __all__ = [
     "MANIFEST_NAME",
     "MARKER_NAME",
     "METRIC",
+    "SEARCH_EF_FLOOR",
     "ChromaGeneration",
     "ChromaIndexStore",
     "IndexStore",
