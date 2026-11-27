@@ -352,3 +352,13 @@ def test_versioned_manifest_matches_the_decision_log() -> None:
         "dockerfile": 4_964,
         "makefile": 2_647,
     }
+
+
+def test_the_head_reader_is_the_src_one() -> None:
+    # Phase 3 (decision P6): moved to src/; the Phase 1 names stay importable from here.
+    import corpus_manifest
+
+    from src.ingestion import repo_head
+
+    assert corpus_manifest.read_head is repo_head.read_head
+    assert corpus_manifest.CorpusHeadError is repo_head.RepositoryHeadError

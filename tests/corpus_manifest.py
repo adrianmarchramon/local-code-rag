@@ -22,9 +22,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
-import os
 import re
-import stat
 import sys
 import time
 from collections.abc import Iterable, Sequence
@@ -35,6 +33,8 @@ from typing import Final
 from llama_index.core import Document
 
 from src.errors import IngestionError
+from src.ingestion.repo_head import RepositoryHeadError
+from src.ingestion.repo_head import read_head as read_head
 
 FROZEN_CORPUS_SHA: Final = "5c288080c88f0bfec435af0093a5155baaf7f343"
 CORPUS_URL: Final = "https://github.com/adrianmarchramon/fraud-mlops-pipeline.git"  # public
@@ -47,115 +47,20 @@ REGENERATE_COMMAND: Final = (
 
 _SHA1_RE: Final = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
-_REF_RE: Final = re.compile(r"refs/[A-Za-z0-9._/-]+")
 _LABEL_RE: Final = re.compile(r"[a-z][a-z0-9_+-]*")
 _SIZE_RE: Final = re.compile(r"0|[1-9][0-9]*")
 _TOTALS_RE: Final = re.compile(r"([0-9]+) files, ([0-9]+) bytes")
 _HEADER_RE: Final = re.compile(r"# ([a-z_]+): (.*)")
-_MAX_HEAD_BYTES: Final = 4 * 1024
-_MAX_PACKED_REFS_BYTES: Final = 1024 * 1024
-_MAX_SYMREF_DEPTH: Final = 5
-_O_FLAGS: Final = (
-    os.O_RDONLY
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_NONBLOCK", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-)
-
-
-class CorpusHeadError(IngestionError):
-    """HEAD of the corpus could not be resolved from ``.git`` without running git."""
 
 
 class ManifestError(IngestionError):
     """The manifest file, or the rows it is generated from, break the format."""
 
 
-# --- HEAD, read from .git in pure Python ---------------------------------------------------------
+# --- HEAD: read by src.ingestion.repo_head (moved there by Phase 3 decision P6) ----------------
+# The names stay importable from here for the Phase 1 tests.
 
-
-def _read_git_file(git_dir: Path, rel: str, limit: int) -> str | None:
-    """Text of ``git_dir/rel``, or None if it does not exist. Never follows a symlink."""
-    path = git_dir / rel
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise CorpusHeadError(f".git/{rel} cannot be inspected: {error}") from error
-    if not stat.S_ISREG(info.st_mode):
-        raise CorpusHeadError(f".git/{rel} is not a regular file (symlinks are not followed)")
-    if info.st_size > limit:
-        raise CorpusHeadError(f".git/{rel} has {info.st_size} bytes, over the {limit} limit")
-    try:
-        fd = os.open(path, _O_FLAGS)
-        try:
-            data = os.read(fd, limit + 1)
-        finally:
-            os.close(fd)
-        return data.decode("ascii")
-    except OSError as error:
-        raise CorpusHeadError(f".git/{rel} cannot be read: {error}") from error
-    except UnicodeDecodeError as error:
-        raise CorpusHeadError(f".git/{rel} is not ASCII text: {error.reason}") from error
-
-
-def _check_ref_name(ref: str) -> str:
-    parts = ref.split("/")
-    if not _REF_RE.fullmatch(ref) or any(part in {"", ".", ".."} for part in parts):
-        raise CorpusHeadError(f"unsupported or unsafe ref name {ref!r} (expected refs/...)")
-    return ref
-
-
-def _packed_ref(git_dir: Path, ref: str) -> str | None:
-    text = _read_git_file(git_dir, "packed-refs", _MAX_PACKED_REFS_BYTES)
-    if text is None:
-        return None
-    for number, line in enumerate(text.splitlines(), start=1):
-        if not line or line.startswith(("#", "^")):  # header, or a peeled tag
-            continue
-        sha, _, name = line.partition(" ")
-        if not _SHA1_RE.fullmatch(sha) or not name:
-            raise CorpusHeadError(f".git/packed-refs line {number} is malformed")
-        if name == ref:
-            return sha
-    return None
-
-
-def read_head(repo: Path) -> str:
-    """The commit SHA that HEAD points to: detached, loose ref or ``packed-refs``.
-
-    Raises :class:`CorpusHeadError` when ``.git`` is missing, is not a directory (a
-    worktree or submodule ``.git`` file points elsewhere and is not followed), or holds
-    something malformed.
-    """
-    git_dir = repo / ".git"
-    try:
-        info = git_dir.lstat()
-    except FileNotFoundError as error:
-        raise CorpusHeadError(f"{repo} has no .git directory") from error
-    except OSError as error:
-        raise CorpusHeadError(f"{git_dir} cannot be inspected: {error}") from error
-    if not stat.S_ISDIR(info.st_mode):
-        raise CorpusHeadError(
-            f"{git_dir} is not a directory (a symlink, or a worktree/submodule .git file "
-            "pointing elsewhere); it is not followed"
-        )
-    name = "HEAD"
-    for _ in range(_MAX_SYMREF_DEPTH):
-        text = _read_git_file(git_dir, name, _MAX_HEAD_BYTES)
-        if text is None:
-            sha = _packed_ref(git_dir, name) if name != "HEAD" else None
-            if sha is None:
-                raise CorpusHeadError(f"{name} is neither a loose nor a packed ref")
-            return sha
-        content = text.rstrip("\n")
-        if _SHA1_RE.fullmatch(content):
-            return content
-        if not content.startswith("ref: "):
-            raise CorpusHeadError(f".git/{name} is neither a SHA nor 'ref: <name>'")
-        name = _check_ref_name(content.removeprefix("ref: "))
-    raise CorpusHeadError(f"more than {_MAX_SYMREF_DEPTH} levels of symbolic refs")
+CorpusHeadError = RepositoryHeadError
 
 
 def corpus_skip_reason(repo: Path, expected_sha: str = FROZEN_CORPUS_SHA) -> str | None:

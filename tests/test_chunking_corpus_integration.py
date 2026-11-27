@@ -157,3 +157,12 @@ def test_another_process_with_another_hash_seed_gives_the_same_digest(
 def test_the_corpus_is_unchanged_and_nothing_left_the_machine(run: ChunkRun) -> None:
     assert run.violations == ()
     assert run.after == run.before
+
+
+def test_the_src_digest_from_nodes_equals_the_versioned_manifest(run: ChunkRun) -> None:
+    # Phase 3 (decision P6): the index manifest uses this function on the same nodes.
+    from src.ingestion.digest import nodes_digest
+
+    digest = run.manifest["digest"]
+    assert isinstance(digest, dict)
+    assert nodes_digest(run.result.nodes) == digest["corpus"]

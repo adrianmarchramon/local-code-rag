@@ -18,11 +18,10 @@ of docs/decisions.md, Appendix S5. Not a test module, and not part of ``src/``.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from importlib.metadata import version
 from pathlib import Path
 from typing import Final
@@ -31,6 +30,9 @@ from llama_index.core.schema import BaseNode
 
 from src.errors import IngestionError
 from src.ingestion.chunker import ChunkingRules, ChunkResult
+from src.ingestion.digest import DIGEST_DEFINITION as DIGEST_DEFINITION
+from src.ingestion.digest import corpus_digest as corpus_digest
+from src.ingestion.digest import document_digest as document_digest
 from src.ingestion.strategies import Strategy, strategy_for
 
 FORMAT: Final = "local-code-rag/chunk-manifest/1"
@@ -38,11 +40,6 @@ MANIFEST_PATH: Final = Path(__file__).resolve().parent / "fixtures" / "chunk_man
 REGENERATE_COMMAND: Final = (
     "uv run --locked --offline python -m tests.chunk_manifest "
     "--out tests/fixtures/chunk_manifest.json"
-)
-DIGEST_DEFINITION: Final = (
-    "document = sha256 of the lines '<node id>:<node hash>' of its nodes in order, joined "
-    "by \\n (UTF-8); corpus = sha256 of the lines '<path>:<document digest>' in document "
-    "order, joined by \\n"
 )
 PACKAGES: Final = ("tree-sitter", "tree-sitter-python", "llama-index-core")
 TOP_KEYS: Final = (
@@ -61,19 +58,6 @@ _HEX64: Final = re.compile(r"[0-9a-f]{64}")
 
 class ChunkManifestError(IngestionError):
     """The chunk manifest file breaks its format."""
-
-
-def _sha256(lines: Iterable[str]) -> str:
-    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
-
-
-def document_digest(nodes: Sequence[BaseNode]) -> str:
-    """Digest of one document's nodes (see the module docstring)."""
-    return _sha256(f"{node.node_id}:{node.hash}" for node in nodes)
-
-
-def corpus_digest(rows: Sequence[dict[str, object]]) -> str:
-    return _sha256(f"{row['path']}:{row['digest']}" for row in rows)
 
 
 def document_rows(result: ChunkResult) -> list[dict[str, object]]:
