@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "id": "ex01",
+      "intent": "token-check",
+      "lang": "en",
+      "kind": "concept",
+      "query": "how is an access token checked?",
+      "expected_files": ["src/auth.py"]
+    },
+    {
+      "id": "ex02",
+      "intent": "token-check",
+      "lang": "es",
+      "kind": "concept",
+      "query": "¿cómo se comprueba un token de acceso?",
+      "expected_files": ["src/auth.py"]
+    },
+    {
+      "id": "ex03",
+      "intent": "row-reader",
+      "lang": "en",
+      "kind": "identifier",
+      "query": "read_rows",
+      "expected_files": ["src/rows.py", "docs/rows.md"]
+    }
+  ]
+}

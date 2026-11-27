@@ -29,3 +29,6 @@ htmlcov/
 # --- OS / editor noise ---
 .DS_Store
 .idea/
+
+# --- Phase 3: the owner's golden retrieval queries stay local (Gate 1 Q-G) ---
+eval/retrieval_golden.json
