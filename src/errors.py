@@ -96,3 +96,59 @@ class InvalidDocumentError(ChunkingError):
     which gets a random UUID) or a repeated ``doc_id`` would produce nodes that change from
     run to run. Build documents with ``src.ingestion.loader.load_repository``.
     """
+
+
+# --- Phase 3: embeddings and the vector index ------------------------------------------------
+
+
+class EmbeddingRecipeError(ConfigurationError):
+    """``EMBEDDING_MODEL`` has no embedding recipe (prefixes, dimension, context).
+
+    Embedding without the model's task prefixes would silently put documents and queries
+    in different parts of the vector space, so an unknown model is a configuration error.
+    """
+
+
+class UnverifiedModelError(VerificationError):
+    """The local embedding model is not the one its recipe was verified for.
+
+    Raised when the model has no local weights, its digest is not in the recipe's list of
+    verified digests, or ``ollama show`` reports another context length or dimension.
+    """
+
+
+class InvalidEmbeddingError(VerificationError):
+    """The embedder returned the wrong number of vectors, or an invalid vector."""
+
+
+class EmbeddingInputTooLongError(VerificationError):
+    """An input exceeds the embedding model's context and ``truncate`` is off.
+
+    ``index`` is the input's position in its batch and ``length`` its length in
+    characters, when known; the text itself is never part of the error.
+    """
+
+    def __init__(self, message: str, *, index: int | None = None, length: int | None = None):
+        self.index = index
+        self.length = length
+        super().__init__(message)
+
+
+class IndexingError(LocalStackError):
+    """Base class for vector-index errors (Phase 3)."""
+
+
+class VectorStoreError(IndexingError):
+    """The vector store cannot be opened safely, or holds something unexpected."""
+
+
+class IndexNotFoundError(IndexingError):
+    """There is no active index at the configured location (run ``make index``)."""
+
+
+class IndexLockedError(IndexingError):
+    """Another indexing run holds the index lock."""
+
+
+class IndexBuildError(IndexingError):
+    """Building the index failed; the previous index, if any, is still the active one."""

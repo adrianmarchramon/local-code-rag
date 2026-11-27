@@ -385,3 +385,65 @@ def test_import_fails_closed_without_home_or_repo_path() -> None:
     assert result.returncode != 0
     assert "ConfigurationError" in result.stderr
     assert "REPO_PATH" in result.stderr
+
+
+# --- Phase 3 (additive): VECTOR_STORE_DIR and COLLECTION_NAME ---------------------------------
+
+
+def test_vector_store_dir_defaults_to_data_under_the_repo_root() -> None:
+    settings = load_settings({})
+
+    assert settings.vector_store_dir == REPO_ROOT / "data" / "vector_store"
+    assert config.SETTINGS.vector_store_dir == config.VECTOR_STORE_DIR
+    assert settings.collection_name == "code"
+    assert settings.collection_name == config.COLLECTION_NAME
+
+
+def test_vector_store_dir_relative_value_is_relative_to_the_repo_root_not_the_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings({"VECTOR_STORE_DIR": "data/other_store"})
+
+    assert settings.vector_store_dir == REPO_ROOT / "data" / "other_store"
+
+
+def test_vector_store_dir_absolute_and_home_values(tmp_path: Path) -> None:
+    assert load_settings({"VECTOR_STORE_DIR": str(tmp_path / "vs")}).vector_store_dir == (
+        tmp_path / "vs"
+    )
+    home = load_settings({"VECTOR_STORE_DIR": "~/idx", "HOME": str(tmp_path)})
+    assert home.vector_store_dir == tmp_path / "idx"
+
+
+def test_vector_store_dir_is_not_created_or_checked_at_load(tmp_path: Path) -> None:
+    target = tmp_path / "not" / "there"
+
+    assert load_settings({"VECTOR_STORE_DIR": str(target)}).vector_store_dir == target
+    assert not (tmp_path / "not").exists()
+
+
+@pytest.mark.parametrize(
+    ("env", "match"),
+    [
+        ({"VECTOR_STORE_DIR": ""}, "set but empty"),
+        ({"VECTOR_STORE_DIR": "a\0b"}, "NUL"),
+        ({"VECTOR_STORE_DIR": "~/x"}, "HOME"),
+        ({"VECTOR_STORE_DIR": "~other/x", "HOME": "/home/x"}, "~user"),
+        ({"COLLECTION_NAME": "ab"}, "not a valid collection name"),
+        ({"COLLECTION_NAME": "-code"}, "not a valid collection name"),
+        ({"COLLECTION_NAME": "code-"}, "not a valid collection name"),
+        ({"COLLECTION_NAME": "co de"}, "not a valid collection name"),
+        ({"COLLECTION_NAME": "c" * 513}, "not a valid collection name"),
+    ],
+    ids=["empty", "nul", "no_home", "tilde_user", "short", "lead", "trail", "space", "long"],
+)
+def test_invalid_index_settings_are_rejected(env: dict[str, str], match: str) -> None:
+    with pytest.raises(ConfigurationError, match=match):
+        load_settings(env)
+
+
+@pytest.mark.parametrize("name", ["test", "code", "a.b_c-1", "x" * 512])
+def test_valid_collection_names_are_kept(name: str) -> None:
+    assert load_settings({"COLLECTION_NAME": name}).collection_name == name

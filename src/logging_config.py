@@ -55,6 +55,10 @@ REDACTED_KEYS: Final = frozenset(
 )
 
 _NOISY_LIBRARY_LOGGERS: Final = ("httpx", "httpcore")
+# Phase 3: these libraries log retrieved node text at DEBUG (ChromaVectorStore and
+# llama_index.core print the first 100 characters of every hit), so they never go below
+# WARNING, whatever level the root logger has.
+CONTENT_LIBRARY_LOGGERS: Final = ("llama_index", "chromadb")
 
 
 def _redact(value: object) -> str:
@@ -85,6 +89,18 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str, ensure_ascii=False)
 
 
+def contain_library_loggers() -> None:
+    """Keep the libraries that can log code text at WARNING or above (idempotent).
+
+    Called by :func:`configure_logging` and by the vector-store client factory, so that a
+    host application that sets the root logger to DEBUG cannot leak indexed code.
+    """
+    for name in CONTENT_LIBRARY_LOGGERS:
+        library = logging.getLogger(name)
+        if library.level < logging.WARNING:  # NOTSET (0) included
+            library.setLevel(logging.WARNING)
+
+
 def configure_logging(level: int | str = logging.INFO, stream: TextIO | None = None) -> None:
     """Install the JSON handler on the root logger (idempotent; stderr by default)."""
     root = logging.getLogger()
@@ -97,3 +113,4 @@ def configure_logging(level: int | str = logging.INFO, stream: TextIO | None = N
     root.setLevel(level)
     for name in _NOISY_LIBRARY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+    contain_library_loggers()

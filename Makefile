@@ -64,6 +64,16 @@ CHUNK_FLAGS ?=
 chunk: ## Chunk REPO_PATH with the Phase 2 strategies and print the report (offline, read-only)
 	$(UV_RUN) python -m src.ingestion.chunker $(CHUNK_FLAGS)
 
+# --- Vector index (Phase 3, Step 4) ----------------------------------------------------
+# Loads and chunks REPO_PATH (or --repo), embeds with the local model (needs Ollama; loopback
+# only, under the network guard) and atomically activates a new index in VECTOR_STORE_DIR.
+# Unchanged nodes reuse their stored vectors. Prints counts, digests and paths, never code.
+# Examples: make index; make index INDEX_FLAGS="--json"; make index INDEX_FLAGS="--repo /path"
+INDEX_FLAGS ?=
+.PHONY: index
+index: ## Build or refresh the vector index of REPO_PATH (needs local Ollama; no search)
+	$(UV_RUN) python -m src.indexing.build_index $(INDEX_FLAGS)
+
 # Phase 2 (Step 7) adds its key test, tests/test_chunking_corpus_integration.py, to this target.
 # --- Phase 1 key test (Step 7) ------------------------------------------------------------
 # Only the corpus key test, not the Ollama integration tests: offline and read-only. It skips,

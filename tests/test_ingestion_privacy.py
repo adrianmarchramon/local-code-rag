@@ -46,6 +46,15 @@ IMPORTS_UNDER_GUARD: tuple[str, ...] = (
     "src.ingestion.strategies",
     "src.ingestion.nodes",
     "src.ingestion.chunk_report",
+    # Phase 3 Steps 1-4 (appended): Chroma, its LlamaIndex integration and the index stack.
+    "chromadb",
+    "llama_index.vector_stores.chroma",
+    "src.ingestion.digest",
+    "src.ingestion.repo_head",
+    "src.indexing.embeddings",
+    "src.indexing.manifest",
+    "src.indexing.vector_store",
+    "src.indexing.build_index",
 )
 
 _CHILD = textwrap.dedent(
@@ -355,3 +364,93 @@ def test_the_whole_chunking_pipeline_needs_no_network_and_writes_nothing(
     assert report["views"] == 4 * report["nodes"]
     assert report["round_trip"] is True
     assert report["files_written"] == []
+
+
+_INDEX_CHILD = textwrap.dedent(
+    """
+    import json, sys
+    from pathlib import Path
+
+    repo_root, work = sys.argv[1], Path(sys.argv[2])
+    sys.path[:0] = [repo_root, repo_root + "/tests"]
+    from src.network_guard import NetworkGuard
+
+    with NetworkGuard() as guard:
+        from fake_embedding import FakeEmbedding
+        from src.indexing.build_index import build_index_with_report
+        from src.indexing.vector_store import ChromaIndexStore
+
+        store = ChromaIndexStore(work / "vs", "code")
+        first = build_index_with_report(
+            work / "repo", store, FakeEmbedding(), rules_file=work / "rules"
+        )
+        second = build_index_with_report(
+            work / "repo", store, FakeEmbedding(), rules_file=work / "rules"
+        )
+        hits = second.index.as_retriever(similarity_top_k=1).retrieve("token")
+    written = sorted(
+        p.relative_to(work).as_posix()
+        for p in work.rglob("*")
+        if not p.relative_to(work).as_posix().startswith(("repo", "vs", "rules", ".env"))
+    )
+    print(json.dumps({
+        "violations": [repr(v) for v in guard.violations],
+        "nodes": first.report.nodes,
+        "second_embedded": second.report.embedded,
+        "hits": len(hits),
+        "onnxruntime": "onnxruntime" in sys.modules,
+        "written_outside_repo_and_store": written,
+    }))
+    """
+)
+
+
+def test_indexing_needs_no_network_and_writes_only_its_store_even_with_a_hostile_env(
+    tmp_path: Path,
+) -> None:
+    """Phase 3 (Steps 1-4): load, chunk, embed (fake), write, verify, activate and query in
+    a fresh interpreter, with a hostile .env in the working directory and hostile CHROMA_*
+    and proxy variables. Nothing may leave the machine or land outside the store."""
+    work = tmp_path / "work"
+    (work / "repo" / "src").mkdir(parents=True)
+    (work / "repo" / "src" / "auth.py").write_text(
+        "def verify_token(token):\n    return token == 'ok'\n", encoding="utf-8"
+    )
+    (work / "repo" / "README.md").write_text("# Tokens\n\nHow tokens work.\n", encoding="utf-8")
+    (work / "rules").write_text("", encoding="utf-8")
+    (work / ".env").write_text(
+        "CHROMA_API_IMPL=chromadb.api.fastapi.FastAPI\nCHROMA_SERVER_HOST=203.0.113.10\n",
+        encoding="utf-8",
+    )
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(work / "home"),
+        "XDG_CACHE_HOME": str(work / "home"),
+        "TMPDIR": str(work / "home"),
+        "LC_ALL": "C.UTF-8",
+        "CHROMA_API_IMPL": "chromadb.api.fastapi.FastAPI",
+        "CHROMA_SERVER_HOST": "203.0.113.10",
+        "CHROMA_OTEL_COLLECTION_ENDPOINT": "http://203.0.113.10:4317",
+        "HTTP_PROXY": "http://203.0.113.10:3128",
+        "HTTPS_PROXY": "http://203.0.113.10:3128",
+        "ALL_PROXY": "http://203.0.113.10:3128",
+    }
+    (work / "home").mkdir()
+
+    result = subprocess.run(  # noqa: S603 (this interpreter, a constant script)
+        [sys.executable, "-I", "-B", "-c", _INDEX_CHILD, str(REPO_ROOT), str(work)],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    report = json.loads(result.stdout)
+    assert report["violations"] == []
+    assert report["nodes"] >= 2
+    assert (report["second_embedded"], report["hits"]) == (0, 1)
+    assert report["onnxruntime"] is False
+    assert report["written_outside_repo_and_store"] == ["home"]

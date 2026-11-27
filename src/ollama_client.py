@@ -14,9 +14,17 @@ from typing import Any, Final, Protocol
 import httpx
 
 import ollama
-from src.errors import ModelNotFoundError, OllamaUnavailableError, VerificationError
+from src.errors import (
+    EmbeddingInputTooLongError,
+    ModelNotFoundError,
+    OllamaUnavailableError,
+    VerificationError,
+)
 
 _MAX_SERVER_MESSAGE_CHARS: Final = 300
+# Ollama 0.34.0's answer to /api/embed with truncate=false and an input over the model's
+# context (HTTP 400), measured on 2026-11-27; pinned by tests/test_ollama_client.py.
+INPUT_TOO_LONG_MESSAGE: Final = "the input length exceeds the context length"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +67,7 @@ class EmbeddingResult:
     vectors: list[list[float]]
     total_duration_ns: int | None
     load_duration_ns: int | None
+    prompt_eval_count: int | None = None  # Phase 3: tokens of the whole batch, as reported
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +136,7 @@ class OllamaHttpClient:
         self._client = ollama.Client(host=base_url, **options)
         self._base_url = base_url
         self._timeout = timeout
+        self._transport = transport
 
     def list_models(self) -> list[LocalModel]:
         with self._translate_errors():
@@ -176,14 +186,54 @@ class OllamaHttpClient:
             eval_duration_ns=response.eval_duration,
         )
 
-    def embed(self, model: str, inputs: Sequence[str]) -> EmbeddingResult:
+    def embed(
+        self, model: str, inputs: Sequence[str], *, truncate: bool | None = None
+    ) -> EmbeddingResult:
+        """Embed ``inputs``; ``truncate`` (Phase 3) is sent only when it is not None.
+
+        With ``truncate=False`` an input over the model's context raises
+        :class:`EmbeddingInputTooLongError` instead of being cut silently.
+        """
         with self._translate_errors(model):
-            response = self._client.embed(model=model, input=list(inputs))
+            response = self._client.embed(model=model, input=list(inputs), truncate=truncate)
         return EmbeddingResult(
             vectors=[[float(x) for x in vector] for vector in response.embeddings],
             total_duration_ns=response.total_duration,
             load_duration_ns=response.load_duration,
+            prompt_eval_count=response.prompt_eval_count,
         )
+
+    def version(self) -> str:
+        """The server's version (``GET /api/version``), with the same hardened settings.
+
+        The ``ollama`` package does not expose this endpoint, so a short-lived ``httpx``
+        client is built with the same host, timeout, redirect and proxy policy.
+        """
+        options: dict[str, Any] = {
+            "base_url": self._base_url,
+            "timeout": self._timeout,
+            "follow_redirects": False,
+            "trust_env": False,
+        }
+        if self._transport is not None:
+            options["transport"] = self._transport
+        with self._translate_errors(), httpx.Client(**options) as client:
+            response = client.get("/api/version")
+            if response.status_code != httpx.codes.OK:
+                raise VerificationError(
+                    f"Ollama at {self._base_url} returned HTTP {response.status_code} for "
+                    "/api/version."
+                )
+            try:
+                payload: object = response.json()
+            except ValueError as exc:  # json.JSONDecodeError
+                raise VerificationError(
+                    f"Ollama at {self._base_url} returned a non-JSON /api/version answer."
+                ) from exc
+        version = payload.get("version") if isinstance(payload, dict) else None
+        if not isinstance(version, str) or not version:
+            raise VerificationError(f"Ollama at {self._base_url} returned no version string.")
+        return version
 
     def running_models(self) -> list[RunningModel]:
         """Models loaded right now, with the context length the server allocated."""
@@ -206,6 +256,10 @@ class OllamaHttpClient:
         except ollama.ResponseError as exc:
             if exc.status_code == 404 and model is not None:
                 raise ModelNotFoundError(model) from exc
+            if exc.status_code == httpx.codes.BAD_REQUEST and exc.error == INPUT_TOO_LONG_MESSAGE:
+                raise EmbeddingInputTooLongError(
+                    f"An input to {model!r} exceeds its context length (truncate is off)."
+                ) from exc
             message = str(exc.error)[:_MAX_SERVER_MESSAGE_CHARS]
             raise VerificationError(
                 f"Ollama at {self._base_url} returned HTTP {exc.status_code}: {message}"

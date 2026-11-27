@@ -15,7 +15,8 @@ logged (Gate 1 Q5); a missing grammar (:class:`~src.errors.ParserUnavailableErro
 invalid input (:class:`~src.errors.InvalidDocumentError`) are fatal.
 
 The parameters are an immutable, validated dataclass (decision log); the modules that do
-the work receive them as arguments and no module in ``src/`` imports this one.
+the work receive them as arguments and no module in ``src/ingestion/`` imports this
+one (orchestrators in other packages, such as ``src.indexing``, call its public API).
 
 CLI: ``python -m src.ingestion.chunker [--repo PATH] [--rules-file PATH]
 [--json | --list | --show FILE_PATH]`` (``make chunk``). It loads the repository with the

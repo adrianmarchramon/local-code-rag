@@ -20,6 +20,12 @@ Values are validated fail-closed at import time, without network access or file 
   ``~/repos/project-to-index``. It must be absolute or start with ``~/`` (a relative path
   would depend on the working directory); ``~`` expands from ``HOME``. Whether it exists
   is checked by the loader, never here.
+* ``VECTOR_STORE_DIR`` (Phase 3) is where the persisted index lives, by default
+  ``data/vector_store`` under this repository's root (git-ignored). Like
+  ``INGEST_IGNORE_FILE``, a relative value is taken relative to the repository root, never
+  the working directory, and ``~/`` expands from ``HOME``; nothing is created here.
+* ``COLLECTION_NAME`` (Phase 3) names the vector collection: 3-512 characters from
+  ``[a-zA-Z0-9._-]``, starting and ending with a letter or digit (Chroma's rule).
 
 An invalid value raises :class:`src.errors.ConfigurationError` with an actionable message.
 """
@@ -61,6 +67,11 @@ _PROJECT_ROOT: Final = Path(__file__).absolute().parents[1]
 DEFAULT_INGEST_IGNORE_FILE: Final = _PROJECT_ROOT / "config" / "ingest.ignore"
 _REPO_UNDER_HOME: Final = ("repos", "project-to-index")  # rag_phase1.md Step 4
 
+# --- Vector index (Phase 3) ----------------------------------------------------------------
+DEFAULT_VECTOR_STORE_DIR: Final = _PROJECT_ROOT / "data" / "vector_store"
+DEFAULT_COLLECTION_NAME: Final = "code"
+_COLLECTION_NAME_RE: Final = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,510}[a-zA-Z0-9]")
+
 
 def _absolute_home(home: str | None) -> Path | None:
     """``home`` as a Path if it is a usable absolute path, else None (lexical only)."""
@@ -93,6 +104,8 @@ class Settings:
     local_allowed_hosts: frozenset[str]
     ingest_ignore_file: Path = DEFAULT_INGEST_IGNORE_FILE
     repo_path: Path = DEFAULT_REPO_PATH
+    vector_store_dir: Path = DEFAULT_VECTOR_STORE_DIR
+    collection_name: str = DEFAULT_COLLECTION_NAME
 
 
 def load_settings(env: Mapping[str, str]) -> Settings:
@@ -111,6 +124,8 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         local_allowed_hosts=allowed_hosts,
         ingest_ignore_file=_parse_ingest_ignore_file(env),
         repo_path=_parse_repo_path(env),
+        vector_store_dir=_parse_vector_store_dir(env),
+        collection_name=_parse_collection_name(env),
     )
 
 
@@ -278,6 +293,37 @@ def _parse_repo_path(env: Mapping[str, str]) -> Path:
     return path
 
 
+def _parse_vector_store_dir(env: Mapping[str, str]) -> Path:
+    name = "VECTOR_STORE_DIR"
+    fix = "Use an absolute path, a path starting with ~/, or one relative to the repository root."
+    if env.get(name) is None:
+        return DEFAULT_VECTOR_STORE_DIR
+    value = _read(env, name, str(DEFAULT_VECTOR_STORE_DIR))
+    if "\0" in value:
+        raise ConfigurationError(f"{name} contains a NUL character. {fix}")
+    if value == "~" or value.startswith("~/"):
+        home = _absolute_home(env.get("HOME"))
+        if home is None:
+            raise ConfigurationError(
+                f"{name}={value!r} starts with '~' but HOME is not absolute. {fix}"
+            )
+        value = str(home) + value[1:]
+    elif value.startswith("~"):
+        raise ConfigurationError(f"{name}={value!r}: '~user' paths are not supported. {fix}")
+    path = Path(value)
+    return path if path.is_absolute() else _PROJECT_ROOT / path
+
+
+def _parse_collection_name(env: Mapping[str, str]) -> str:
+    value = _read(env, "COLLECTION_NAME", DEFAULT_COLLECTION_NAME)
+    if not _COLLECTION_NAME_RE.fullmatch(value):
+        raise ConfigurationError(
+            f"COLLECTION_NAME={value!r} is not a valid collection name: use 3-512 characters "
+            "from [a-zA-Z0-9._-], starting and ending with a letter or digit."
+        )
+    return value
+
+
 # Fail-closed validation at import time (the only import-time side effect in this package).
 SETTINGS: Final[Settings] = load_settings(os.environ)
 
@@ -289,3 +335,5 @@ LLM_CONTEXT_WINDOW: Final[int] = SETTINGS.llm_context_window
 LOCAL_ALLOWED_HOSTS: Final[frozenset[str]] = SETTINGS.local_allowed_hosts
 INGEST_IGNORE_FILE: Final[Path] = SETTINGS.ingest_ignore_file
 REPO_PATH: Final[Path] = SETTINGS.repo_path
+VECTOR_STORE_DIR: Final[Path] = SETTINGS.vector_store_dir
+COLLECTION_NAME: Final[str] = SETTINGS.collection_name

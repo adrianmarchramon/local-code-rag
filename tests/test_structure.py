@@ -22,6 +22,11 @@ SCAFFOLDED_MODULES: tuple[str, ...] = (
     "src.api.main",
     "src.api.schemas",
     "src.evaluation.ragas_eval",
+    # Phase 3 (Steps 1-4, appended)
+    "src.indexing.build_index",
+    "src.indexing.manifest",
+    "src.ingestion.digest",
+    "src.ingestion.repo_head",
 )
 
 

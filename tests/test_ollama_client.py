@@ -11,8 +11,14 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from src.errors import ModelNotFoundError, OllamaUnavailableError, VerificationError
+from src.errors import (
+    EmbeddingInputTooLongError,
+    ModelNotFoundError,
+    OllamaUnavailableError,
+    VerificationError,
+)
 from src.ollama_client import (
+    INPUT_TOO_LONG_MESSAGE,
     EmbeddingResult,
     Generation,
     LocalModel,
@@ -203,3 +209,86 @@ def test_proxy_and_ollama_host_environment_variables_are_ignored(
         # A proxied or OLLAMA_HOST-redirected request would hit the network guard instead.
         with pytest.raises(OllamaUnavailableError, match="Cannot connect"):
             client.list_models()
+
+
+# --- Phase 3 (Step 2, additive): truncate, token count, the too-long error and the version ---
+
+
+def _embed_answer(prompt_eval_count: int | None = 7) -> httpx.Response:
+    body: dict[str, object] = {"model": "e", "embeddings": [[0.1, 0.2]]}
+    if prompt_eval_count is not None:
+        body["prompt_eval_count"] = prompt_eval_count
+    return httpx.Response(200, json=body)
+
+
+def test_embed_sends_truncate_only_when_given_and_maps_the_token_count() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return _embed_answer()
+
+    client = _client(handler)
+    with_flag = client.embed("e", ["a"], truncate=False)
+    client.embed("e", ["a"])
+
+    assert bodies[0]["truncate"] is False
+    assert "truncate" not in bodies[1]
+    assert with_flag.prompt_eval_count == 7
+
+
+def test_embed_without_a_token_count_reports_none() -> None:
+    assert _client(lambda _: _embed_answer(None)).embed("e", ["a"]).prompt_eval_count is None
+
+
+def test_the_measured_too_long_answer_becomes_its_own_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": INPUT_TOO_LONG_MESSAGE})
+
+    with pytest.raises(EmbeddingInputTooLongError, match="exceeds its context length"):
+        _client(handler).embed("e", ["x" * 10], truncate=False)
+    assert INPUT_TOO_LONG_MESSAGE == "the input length exceeds the context length"
+
+
+def test_any_other_400_stays_a_plain_verification_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "invalid input type"})
+
+    with pytest.raises(VerificationError) as raised:
+        _client(handler).embed("e", ["x"], truncate=False)
+    assert not isinstance(raised.value, EmbeddingInputTooLongError)
+
+
+def test_version_reads_the_version_endpoint() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"version": "0.34.0"})
+
+    assert _client(handler).version() == "0.34.0"
+    assert seen == ["/api/version"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        httpx.Response(302, headers={"location": "http://203.0.113.10/api/version"}),
+        httpx.Response(500, text="boom"),
+        httpx.Response(200, text="not json"),
+        httpx.Response(200, json={"name": "ollama"}),
+        httpx.Response(200, json={"version": ""}),
+    ],
+    ids=["redirect_not_followed", "server_error", "not_json", "no_version", "empty_version"],
+)
+def test_a_bad_version_answer_is_a_verification_error(answer: httpx.Response) -> None:
+    with pytest.raises(VerificationError, match=r"/api/version|version string"):
+        _client(lambda _: answer).version()
+
+
+def test_version_timeout_becomes_ollama_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with pytest.raises(OllamaUnavailableError, match="did not answer"):
+        _client(handler).version()

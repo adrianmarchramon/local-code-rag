@@ -1500,9 +1500,11 @@ def test_the_run_logs_counts_never_content(caplog: pytest.LogCaptureFixture) -> 
 
 
 def test_no_module_in_src_imports_the_chunker() -> None:
+    # Phase 3 (owner's decision, 2026-11-27): the rule covers the modules the chunker drives
+    # (src/ingestion/), so there are no cycles; orchestrators elsewhere call its public API.
     importers = [
         path.relative_to(REPO_ROOT).as_posix()
-        for path in (REPO_ROOT / "src").rglob("*.py")
+        for path in (REPO_ROOT / "src" / "ingestion").rglob("*.py")
         if path.name != "chunker.py"
         and (
             "ingestion.chunker" in path.read_text(encoding="utf-8")
@@ -2139,3 +2141,23 @@ def test_leading_comments_that_cannot_join_a_split_definition_get_their_own_span
     assert text[spans[0].start : spans[0].end].startswith("# section banner")
     assert spans[1].kind.value == kind
     assert text[spans[1].start : spans[1].end].startswith(("@parametrize(", "class Config:"))
+
+
+# --- Phase 3 (decision P6, additive): the digest lives in src/ and reproduces Phase 2's -------
+
+
+def test_the_src_digest_reproduces_the_synthetic_golden_from_nodes() -> None:
+    from src.ingestion.digest import nodes_digest
+
+    _, result = _synthetic_run()
+
+    assert nodes_digest(result.nodes) == GOLDEN_SYNTHETIC_DIGEST
+
+
+def test_the_test_helpers_reuse_the_src_digest() -> None:
+    import chunk_manifest
+
+    from src.ingestion import digest
+
+    assert chunk_manifest.document_digest is digest.document_digest
+    assert chunk_manifest.corpus_digest is digest.corpus_digest
